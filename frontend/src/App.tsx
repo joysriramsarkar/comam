@@ -1,0 +1,158 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { api, bnNum, taka, type CommandResponse, type Product } from "./api";
+
+interface Summary { sales_total: number; sales_count: number; est_profit: number }
+interface Customer { id: number; name: string; due: number }
+
+export default function App() {
+  const [products, setProducts] = useState<Product[]>([]);
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [summary, setSummary] = useState<Summary | null>(null);
+  const [text, setText] = useState("");
+  const [resp, setResp] = useState<CommandResponse | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [listening, setListening] = useState(false);
+  const recogRef = useRef<unknown>(null);
+
+  const refresh = useCallback(async () => {
+    const [p, c, s] = await Promise.all([api.products(), api.customers(), api.summary(1)]);
+    setProducts(p); setCustomers(c); setSummary(s);
+  }, []);
+
+  useEffect(() => { refresh().catch(() => setError("সার্ভারে সংযোগ যাচ্ছে না")); }, [refresh]);
+
+  const send = async () => {
+    if (!text.trim()) return;
+    setBusy(true); setError("");
+    try {
+      const r = await api.command(text.trim());
+      setResp(r);
+      if (r.kind === "report" || r.kind === "due_query") setText("");
+    } catch (e) { setError(String(e)); }
+    setBusy(false);
+  };
+
+  const confirm = async () => {
+    if (!resp?.draft_id) return;
+    setBusy(true);
+    try { await api.confirm(resp.draft_id); setResp(null); setText(""); await refresh(); }
+    catch (e) { setError(String(e)); }
+    setBusy(false);
+  };
+
+  const reject = async () => {
+    if (resp?.draft_id) await api.reject(resp.draft_id).catch(() => {});
+    setResp(null);
+  };
+
+  const mic = () => {
+    const SR = (window as unknown as { webkitSpeechRecognition?: unknown; SpeechRecognition?: unknown });
+    const Ctor = (SR.SpeechRecognition || SR.webkitSpeechRecognition) as
+      (new () => { lang: string; onresult: (e: { results: { [k: number]: { [k: number]: { transcript: string } } } }) => void; onend: () => void; start: () => void }) | undefined;
+    if (!Ctor) { setError("এই ব্রাউজারে voice recognition নেই — টাইপ করে বলুন, অথবা সার্ভারের transcribe ব্যবহার হবে"); return; }
+    const rec = new Ctor();
+    rec.lang = "bn-BD";
+    rec.onresult = (e) => setText(e.results[0][0].transcript);
+    rec.onend = () => setListening(false);
+    recogRef.current = rec;
+    setListening(true);
+    rec.start();
+  };
+
+  const lowCount = products.filter((p) => p.stock <= p.low_stock_threshold).length;
+  const totalDue = customers.reduce((a, c) => a + (c.due || 0), 0);
+  const maxPrice = Math.max(1, ...products.map((p) => p.price));
+
+  return (
+    <div className="wrap">
+      <header>
+        <h1>comam <span>AI</span></h1>
+        <p className="tagline">বললেই হিসাব — বাংলা ভয়েসে দোকান চালান</p>
+      </header>
+
+      <div className="cards">
+        <div className="card"><div className="k">আজকের বিক্রি</div><div className="v">{summary ? taka(summary.sales_total) : "…"}</div></div>
+        <div className="card"><div className="k">মোট বাকি</div><div className="v">{taka(totalDue)}</div></div>
+        <div className="card"><div className="k">কম স্টক</div><div className="v">{bnNum(lowCount)}টা পণ্য</div></div>
+      </div>
+
+      <div className="cmdbox">
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="যেমন: দুই কেজি চিনি, তিনটে সাবান, রহিমদার নামে বাকিতে"
+        />
+        <div className="row">
+          <button className="mic" onClick={mic} disabled={listening}>{listening ? "শুনছি…" : "🎤 বলুন"}</button>
+          <button className="primary" onClick={send} disabled={busy || !text.trim()}>পাঠান</button>
+        </div>
+        {error && <p className="err">{error}</p>}
+      </div>
+
+      {resp?.answer_bn && <div className="answer">{resp.answer_bn}</div>}
+
+      {resp?.draft_id && resp.draft && !resp.needs_clarification && (
+        <div className="draft">
+          <div className="sum">{resp.summary_bn}</div>
+          <ul>
+            {resp.draft.items?.map((i) => (
+              <li key={i.product_id}>{i.name_bn} — {bnNum(i.qty)} × {taka(i.unit_price)} = {taka(i.line_total)}</li>
+            ))}
+          </ul>
+          <div className="row">
+            <button className="primary" onClick={confirm} disabled={busy}>✓ ঠিক আছে, সেভ করুন</button>
+            <button onClick={reject}>বাতিল</button>
+          </div>
+        </div>
+      )}
+
+      {resp?.needs_clarification && resp.draft?.ambiguities?.map((a, idx) => (
+        <div className="amb" key={idx}>
+          <div>কোনটা বলছেন?</div>
+          <div className="row">
+            {a.options.map((o) => (
+              <button key={o.product_id} onClick={() => { setText(`${a.text} — ${o.name_bn}`); setResp(null); }}>
+                {o.name_bn} ({taka(o.price)})
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+
+      <h2>পণ্য ও স্টক</h2>
+      <table>
+        <thead><tr><th>পণ্য</th><th>দাম</th><th>স্টক</th></tr></thead>
+        <tbody>
+          {products.map((p) => (
+            <tr key={p.id}>
+              <td>{p.name_bn}</td><td>{taka(p.price)}</td>
+              <td className={p.stock <= p.low_stock_threshold ? "low" : ""}>{bnNum(p.stock)} {p.unit}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <h2>দাম অনুযায়ী পণ্য (চার্ট)</h2>
+      <div className="card">
+        <div className="bars">
+          {products.slice(0, 8).map((p) => (
+            <div key={p.id} className="bar" style={{ height: `${(p.price / maxPrice) * 100}%` }}>
+              <small>{p.name_bn.split(" ")[0]}</small>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <h2>বাকি খাতা</h2>
+      <table>
+        <thead><tr><th>ক্রেতা</th><th>বাকি</th></tr></thead>
+        <tbody>
+          {customers.map((c) => (
+            <tr key={c.id}><td>{c.name}</td><td>{taka(c.due || 0)}</td></tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
