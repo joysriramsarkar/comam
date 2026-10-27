@@ -51,6 +51,17 @@ The split is the point: **AI understands language; code does the accounting.** E
 - **Voice in:** Muse Voice Transcribe (Bengali) — quality verified on Day 1 against the number/parser test sentences; typing always remains available, and the confirm step catches misheard numbers.
 - **Development:** Muse Code. Contributor-tier models may be used while *writing* this public code; the shipped app itself only ever calls the Standard model above.
 
+## Status & eval
+
+**26 Oct (Day 0):** backend complete (billing spine, due ledger, reports, draft→confirm, ambiguity resolution, editable drafts), frontend built, demo seed data in place. 20 automated tests pass.
+
+**Local-parser eval (offline baseline, `eval/commands.json`, 50 commands):**
+- Intent + customer accuracy: **50/50 (100%)**
+- Sale/purchase total accuracy: **38/38 (100%)** — totals always computed by code from DB prices
+- Ambiguity detection: flagged, never guessed (বিস্কুট → two pack sizes)
+
+The same command set will be run through the Muse Spark path and with recorded voices (~100 spoken commands) during the hackathon; results will be added here. Run it yourself: `python scripts/run_eval.py`.
+
 ## Tech
 
 - Backend: Python + FastAPI · Database: SQLite

@@ -1,5 +1,14 @@
 # First steps — comam AI (build plan, 27 Oct – 4 Nov)
 
+> **Progress, 26 Oct night (ahead of plan):** the whole core is already
+> built and verified — backend (billing spine, parser, due ledger,
+> reports, ambiguity resolve, editable drafts), frontend (built OK),
+> 20 tests passing, local-parser eval 50/50. Remaining real work:
+> (a) live Muse Spark test with the real API key, (b) Day-1 Bengali
+> voice-transcribe test, (c) spoken eval set (~100 recorded commands),
+> (d) demo data/video polish. The day plan below stays as the schedule
+> for those remaining pieces.
+
 ## Before app code (27 Oct morning)
 
 1. **Repo:** ✅ DONE 26 Oct night — public repo created (named `conin` by

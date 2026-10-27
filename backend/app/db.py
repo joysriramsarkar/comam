@@ -92,7 +92,8 @@ SEED_CUSTOMERS = [
 
 
 def get_conn(db_path=None):
-    conn = sqlite3.connect(str(db_path or DEFAULT_DB))
+    # check_same_thread=False: FastAPI serves requests from worker threads.
+    conn = sqlite3.connect(str(db_path or DEFAULT_DB), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 

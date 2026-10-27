@@ -145,6 +145,22 @@ class Ledger:
             "est_profit": round(profit, 2),
         }
 
+    def daily_sales(self, days=7):
+        out = []
+        for back in range(days - 1, -1, -1):
+            day = datetime.now() - timedelta(days=back)
+            start = day.strftime("%Y-%m-%d 00:00:00")
+            end = day.strftime("%Y-%m-%d 23:59:59")
+            row = self.conn.execute(
+                "SELECT COUNT(*) n, COALESCE(SUM(total),0) s FROM sales"
+                " WHERE status='confirmed' AND created_at>=? AND created_at<=?",
+                (start, end),
+            ).fetchone()
+            out.append(
+                {"date": day.strftime("%Y-%m-%d"), "count": row["n"], "total": round(row["s"], 2)}
+            )
+        return out
+
     def week_compare(self):
         cur = self.sales_summary(7)["sales_total"]
         since = (datetime.now() - timedelta(days=14)).strftime("%Y-%m-%d %H:%M:%S")

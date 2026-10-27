@@ -29,6 +29,13 @@ def _parse_item_segment(conn, segment):
     unit_factor = 1.0
     unit_kind = None
     rest = segment
+    money_amount = None
+    if qty_span and re.search(r"টাকার", segment[qty_span[1]:]):
+        # '৭৫ টাকার চিনি' = 75 taka WORTH of sugar -> qty = amount / price
+        money_amount = qty
+        rest = (segment[: qty_span[0]] + " " +
+                segment[qty_span[1]:].replace("টাকার", " ", 1)).strip()
+        qty_span = None
     if qty_span:
         after = segment[qty_span[1]:].strip()
         for uw, (uk, factor) in sorted(UNITS.items(), key=lambda kv: -len(kv[0])):
@@ -61,24 +68,31 @@ def _parse_item_segment(conn, segment):
     product, _score = matches[0]
     if qty is None:
         qty = 1.0
-    qty_units = qty * unit_factor
+    if money_amount is not None:
+        qty_units = round(money_amount / product["price"], 3)
+        line_total = round(money_amount, 2)
+    else:
+        qty_units = qty * unit_factor
+        line_total = round(product["price"] * qty_units, 2)
     item = {
         "product_id": product["id"],
         "name_bn": product["name_bn"],
         "qty": qty_units,
         "unit": product["unit"],
         "unit_price": product["price"],
-        "line_total": round(product["price"] * qty_units, 2),
+        "line_total": line_total,
     }
     amb = None
     if ambiguous:
-        amb = {
-            "text": rest,
-            "options": [
-                {"product_id": p["id"], "name_bn": p["name_bn"], "price": p["price"]}
-                for p, _ in matches[:3]
-            ],
-        }
+        options = [
+            {"product_id": p["id"], "name_bn": p["name_bn"], "price": p["price"]}
+            for p, _ in matches[:3]
+        ]
+        amb = {"text": rest, "options": options, "product_id": product["id"]}
+        # placeholder choice, flagged: confirm stays blocked until the
+        # shopkeeper picks one of the options (resolve endpoint).
+        item["ambiguous"] = True
+        item["options"] = options
     return item, amb, rest
 
 
@@ -128,11 +142,20 @@ def parse_command(conn, text):
     # otherwise: a sale (or purchase). Purchases say কিনলাম/কিনেছি/এনেছি.
     draft["kind"] = "purchase" if any(w in t for w in ("কিনলাম", "কিনেছি", "এনেছি", "আনলাম")) else "sale"
     draft["payment_type"] = "due" if ("বাকি" in t or "নামে" in t) else "cash"
+    cust_names = []
+    if customer is not None:
+        cust_names = [customer["name"]] + [
+            a.strip() for a in customer["aliases"].split(",") if a.strip()
+        ]
     items = []
     for seg in _split_items(text):
-        # remove trailing customer/payment phrases from the last segment
-        seg_clean = re.sub(r"(র|এর)?\s*নামে.*$", "", seg).strip()
-        item, amb, _ = _parse_item_segment(conn, seg_clean or seg)
+        # strip customer mentions + payment words wherever they appear
+        # ('রহিমদার নামে দুই কেজি চিনি' and '...চিনি, রহিমদার নামে' alike)
+        s = seg
+        for n in cust_names:
+            s = s.replace(n, " ")
+        s = re.sub(r"(নামে|বাকিতে|বাকি|নগদে|নগদ)", " ", s)
+        item, amb, _ = _parse_item_segment(conn, s.strip() or seg)
         if amb:
             draft["ambiguities"].append(amb)
         if item:

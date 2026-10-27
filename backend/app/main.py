@@ -209,6 +209,103 @@ def undo_last_sale():
     return {"voided": voided}
 
 
+class ResolveIn(BaseModel):
+    product_id: int
+
+
+class ItemsIn(BaseModel):
+    items: list[dict]
+
+
+def _load_draft(draft_id: int):
+    row = conn().execute("SELECT * FROM drafts WHERE id=?", (draft_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "draft not found")
+    if row["status"] != "pending":
+        raise HTTPException(400, "draft already handled")
+    return json.loads(row["payload"])
+
+
+def _store_draft(draft_id: int, draft):
+    conn().execute(
+        "UPDATE drafts SET payload=? WHERE id=?",
+        (json.dumps(draft, ensure_ascii=False), draft_id),
+    )
+    conn().commit()
+
+
+def _rebuild_items(raw_items):
+    """Recompute item rows from DB prices (client/parser prices never trusted)."""
+    out = []
+    for it in raw_items:
+        p = conn().execute(
+            "SELECT * FROM products WHERE id=?", (it["product_id"],)
+        ).fetchone()
+        if p is None:
+            raise HTTPException(400, f"unknown product {it['product_id']}")
+        qty = float(it["qty"])
+        if qty <= 0:
+            continue
+        out.append(
+            {
+                "product_id": p["id"],
+                "name_bn": p["name_bn"],
+                "qty": qty,
+                "unit": p["unit"],
+                "unit_price": p["price"],
+                "line_total": round(p["price"] * qty, 2),
+            }
+        )
+    return out
+
+
+@app.post("/api/drafts/{draft_id}/resolve")
+def resolve_draft(draft_id: int, body: ResolveIn):
+    """Shopkeeper picked one option for an ambiguous item. Swap it in,
+    recompute, and unblock confirmation."""
+    draft = _load_draft(draft_id)
+    target = None
+    for it in draft.get("items", []):
+        if it.get("ambiguous"):
+            target = it
+            break
+    if target is None:
+        raise HTTPException(400, "no ambiguous item in this draft")
+    rebuilt = _rebuild_items([{"product_id": body.product_id, "qty": target["qty"]}])
+    if not rebuilt:
+        raise HTTPException(400, "invalid choice")
+    idx = draft["items"].index(target)
+    draft["items"][idx] = rebuilt[0]
+    draft["items"] = _rebuild_items(draft["items"])
+    draft["total"] = round(sum(i["line_total"] for i in draft["items"]), 2)
+    draft["ambiguities"] = []
+    _store_draft(draft_id, draft)
+    return {"draft": draft, "summary_bn": draft_summary_bn(draft)}
+
+
+@app.put("/api/drafts/{draft_id}/items")
+def edit_draft_items(draft_id: int, body: ItemsIn):
+    """Shopkeeper edits quantities (or removes items with qty 0) before
+    confirming — the draft is always editable, totals recomputed in code."""
+    draft = _load_draft(draft_id)
+    if draft["kind"] not in ("sale", "purchase"):
+        raise HTTPException(400, "only sale/purchase drafts have items")
+    draft["items"] = _rebuild_items(body.items)
+    draft["total"] = round(sum(i["line_total"] for i in draft["items"]), 2)
+    _store_draft(draft_id, draft)
+    return {"draft": draft, "summary_bn": draft_summary_bn(draft)}
+
+
+@app.get("/api/health")
+def health():
+    return {"ok": True, "spark_enabled": meta.enabled}
+
+
+@app.get("/api/reports/daily")
+def report_daily(days: int = 7):
+    return ledger().daily_sales(days)
+
+
 @app.post("/api/transcribe")
 async def transcribe(file: UploadFile = File(...)):
     if not meta.enabled:

@@ -44,6 +44,20 @@ export const api = {
     }).then(j),
   confirm: (id: number) => fetch(`/api/drafts/${id}/confirm`, { method: "POST" }).then(j),
   reject: (id: number) => fetch(`/api/drafts/${id}/reject`, { method: "POST" }).then(j),
+  resolve: (id: number, productId: number) =>
+    fetch(`/api/drafts/${id}/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ product_id: productId }),
+    }).then(j),
+  updateItems: (id: number, items: { product_id: number; qty: number }[]) =>
+    fetch(`/api/drafts/${id}/items`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items }),
+    }).then(j),
+  daily: (days = 7): Promise<{ date: string; count: number; total: number }[]> =>
+    fetch(`/api/reports/daily?days=${days}`).then(j),
 };
 
 export const bnNum = (v: number | string): string =>

@@ -59,7 +59,7 @@ WORD_NUMBERS = {
 }
 
 # stand-alone fractional words
-FRACTION_WORDS = {"আধা": 0.5, "অর্ধেক": 0.5, "দেড়": 1.5, "আড়াই": 2.5}
+FRACTION_WORDS = {"আধা": 0.5, "অর্ধেক": 0.5, "দেড়": 1.5, "আড়াই": 2.5, "হাফ": 0.5}
 
 UNITS = {
     "কেজি": ("kg", 1.0), "কিলো": ("kg", 1.0), "কিলোগ্রাম": ("kg", 1.0),
@@ -80,6 +80,10 @@ def _base_number(tokens, i):
     value = None
     if re.fullmatch(r"\d+(\.\d+)?", ascii_tok):
         value = float(ascii_tok)
+        i += 1
+    elif tok.endswith("শ") and tok[:-1] in WORD_NUMBERS and WORD_NUMBERS[tok[:-1]] < 10:
+        # colloquial hundreds: দুইশ (200), তিনশ (300), পাঁচশ (500)
+        value = float(WORD_NUMBERS[tok[:-1]] * 100)
         i += 1
     elif tok in WORD_NUMBERS:
         value = float(WORD_NUMBERS[tok])

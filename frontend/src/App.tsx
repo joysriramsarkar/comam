@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, bnNum, taka, type CommandResponse, type Product } from "./api";
+import { api, bnNum, taka, type CommandResponse, type DraftItem, type Product } from "./api";
 
 interface Summary { sales_total: number; sales_count: number; est_profit: number }
 interface Customer { id: number; name: string; due: number }
@@ -14,11 +14,17 @@ export default function App() {
   const [error, setError] = useState("");
   const [listening, setListening] = useState(false);
   const recogRef = useRef<unknown>(null);
+  const [daily, setDaily] = useState<{ date: string; count: number; total: number }[]>([]);
+  const [editItems, setEditItems] = useState<DraftItem[]>([]);
 
   const refresh = useCallback(async () => {
-    const [p, c, s] = await Promise.all([api.products(), api.customers(), api.summary(1)]);
-    setProducts(p); setCustomers(c); setSummary(s);
+    const [p, c, s, d] = await Promise.all([api.products(), api.customers(), api.summary(1), api.daily(7)]);
+    setProducts(p); setCustomers(c); setSummary(s); setDaily(d);
   }, []);
+
+  useEffect(() => {
+    if (resp?.draft?.items) setEditItems(resp.draft.items.map((i) => ({ ...i })));
+  }, [resp?.draft_id, resp?.draft]);
 
   useEffect(() => { refresh().catch(() => setError("সার্ভারে সংযোগ যাচ্ছে না")); }, [refresh]);
 
@@ -36,10 +42,26 @@ export default function App() {
   const confirm = async () => {
     if (!resp?.draft_id) return;
     setBusy(true);
-    try { await api.confirm(resp.draft_id); setResp(null); setText(""); await refresh(); }
-    catch (e) { setError(String(e)); }
+    try {
+      await api.updateItems(resp.draft_id, editItems.map((i) => ({ product_id: i.product_id, qty: i.qty })));
+      await api.confirm(resp.draft_id);
+      setResp(null); setText(""); await refresh();
+    } catch (e) { setError(String(e)); }
     setBusy(false);
   };
+
+  const resolveDraft = async (productId: number) => {
+    if (!resp?.draft_id) return;
+    setBusy(true);
+    try {
+      const r = await api.resolve(resp.draft_id, productId);
+      setResp({ ...resp, draft: r.draft, summary_bn: r.summary_bn, needs_clarification: false });
+    } catch (e) { setError(String(e)); }
+    setBusy(false);
+  };
+
+  const setQty = (idx: number, qty: number) =>
+    setEditItems((items) => items.map((it, i) => (i === idx ? { ...it, qty: Math.max(0, qty) } : it)));
 
   const reject = async () => {
     if (resp?.draft_id) await api.reject(resp.draft_id).catch(() => {});
@@ -62,7 +84,6 @@ export default function App() {
 
   const lowCount = products.filter((p) => p.stock <= p.low_stock_threshold).length;
   const totalDue = customers.reduce((a, c) => a + (c.due || 0), 0);
-  const maxPrice = Math.max(1, ...products.map((p) => p.price));
 
   return (
     <div className="wrap">
@@ -95,11 +116,21 @@ export default function App() {
       {resp?.draft_id && resp.draft && !resp.needs_clarification && (
         <div className="draft">
           <div className="sum">{resp.summary_bn}</div>
-          <ul>
-            {resp.draft.items?.map((i) => (
-              <li key={i.product_id}>{i.name_bn} — {bnNum(i.qty)} × {taka(i.unit_price)} = {taka(i.line_total)}</li>
+          <ul className="editlist">
+            {editItems.map((i, idx) => (
+              <li key={i.product_id}>
+                <span>{i.name_bn} — {taka(i.unit_price)}/{i.unit}</span>
+                <span className="qtyctl">
+                  <button onClick={() => setQty(idx, +(i.qty - (i.unit === "piece" ? 1 : 0.5)).toFixed(2))}>−</button>
+                  <b>{bnNum(i.qty)}</b>
+                  <button onClick={() => setQty(idx, +(i.qty + (i.unit === "piece" ? 1 : 0.5)).toFixed(2))}>+</button>
+                  <button onClick={() => setQty(idx, 0)}>✕</button>
+                </span>
+                <span>{taka(i.unit_price * i.qty)}</span>
+              </li>
             ))}
           </ul>
+          <div className="sum">মোট {taka(editItems.reduce((a, i) => a + i.unit_price * i.qty, 0))}</div>
           <div className="row">
             <button className="primary" onClick={confirm} disabled={busy}>✓ ঠিক আছে, সেভ করুন</button>
             <button onClick={reject}>বাতিল</button>
@@ -112,7 +143,7 @@ export default function App() {
           <div>কোনটা বলছেন?</div>
           <div className="row">
             {a.options.map((o) => (
-              <button key={o.product_id} onClick={() => { setText(`${a.text} — ${o.name_bn}`); setResp(null); }}>
+              <button key={o.product_id} onClick={() => resolveDraft(o.product_id)} disabled={busy}>
                 {o.name_bn} ({taka(o.price)})
               </button>
             ))}
@@ -133,14 +164,17 @@ export default function App() {
         </tbody>
       </table>
 
-      <h2>দাম অনুযায়ী পণ্য (চার্ট)</h2>
+      <h2>গত ৭ দিনের বিক্রি</h2>
       <div className="card">
         <div className="bars">
-          {products.slice(0, 8).map((p) => (
-            <div key={p.id} className="bar" style={{ height: `${(p.price / maxPrice) * 100}%` }}>
-              <small>{p.name_bn.split(" ")[0]}</small>
+          {daily.map((d) => (
+            <div key={d.date} className="bar" style={{ height: `${Math.max(3, (d.total / Math.max(1, ...daily.map((x) => x.total))) * 100)}%` }}>
+              <small>{taka(d.total)}</small>
             </div>
           ))}
+        </div>
+        <div className="barlabels">
+          {daily.map((d) => <span key={d.date}>{bnNum(d.date.slice(8))}/{bnNum(d.date.slice(5, 7))}</span>)}
         </div>
       </div>
 
