@@ -19,6 +19,16 @@ from .ledger import Ledger
 from .meta_client import MetaClient
 from .parser_local import draft_summary_bn, parse_command
 
+try:
+    # Local development: MODEL_API_KEY etc. live in the repo-root .env.
+    # Optional — in production the environment provides them directly.
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+    load_dotenv()
+except ImportError:
+    pass
+
 app = FastAPI(title="comam AI")
 meta = MetaClient()
 _conn = None
@@ -50,14 +60,14 @@ def _save_draft(draft):
 
 def _report_answer(report, led: Ledger):
     if report == "sales_summary":
-        s = led.sales_summary(1)
+        s = led.sales_summary(1, calendar=True)
         return (f"আজ মোট {fmt_taka(s['sales_total'])} বিক্রি হয়েছে "
                 f"({fmt_num(s['sales_count'])}টা বিল), আনুমানিক লাভ {fmt_taka(s['est_profit'])}।"), s
     if report == "week_compare":
         w = led.week_compare()
         base = (f"এই সপ্তাহে বিক্রি {fmt_taka(w['this_week'])}, গত সপ্তাহে {fmt_taka(w['last_week'])}।")
         if w["change_pct"] is not None:
-            base += f" আগের সপ্তাহের চেয়ে {fmt_num(w['change_pct'])}% {'বেশি' if w['change_pct'] >= 0 else 'কম'}।"
+            base += f" আগের সপ্তাহের চেয়ে {fmt_num(abs(w['change_pct']))}% {'বেশি' if w['change_pct'] >= 0 else 'কম'}।"
         return base, w
     if report == "low_stock":
         items = led.low_stock()
@@ -125,7 +135,17 @@ def command(body: CommandIn):
         answer, data = _report_answer(draft["report"], ledger())
         return {"kind": kind, "answer_bn": answer, "data": data, "draft": draft}
     if kind == "unknown":
-        return {"kind": kind, "answer_bn": "বুঝতে পারিনি — আরেকবার বলবেন?", "draft": draft}
+        return {
+            "kind": kind,
+            "answer_bn": draft.get("reply") or "বুঝতে পারিনি — আরেকবার বলবেন?",
+            "draft": draft,
+        }
+    if kind == "undo":
+        # Pin the target NOW: the sale the shopkeeper means is the last
+        # one at draft time, not whatever is last when they confirm.
+        last = ledger().last_sale()
+        if last:
+            draft["target_sale_id"] = last["id"]
     draft_id = _save_draft(draft)
     return {
         "kind": kind,
@@ -154,9 +174,31 @@ def confirm_draft(draft_id: int):
             raise HTTPException(
                 400, f"ক্যাটালগে নেই এমন পণ্য আছে: {names} — আগে ঠিক করুন"
             )
+        # Money guards — they live here, at confirm, so BOTH engines
+        # (local parser and Spark tool-calling) are held to them.
+        if not draft.get("items"):
+            raise HTTPException(400, "কোনো পণ্য নেই — খালি বিল সেভ হবে না")
+        for i in draft["items"]:
+            if float(i["qty"]) <= 0:
+                raise HTTPException(400, "পরিমাণ শূন্যের বেশি হতে হবে")
         customer_id = (draft.get("customer") or {}).get("id")
         if customer_id is None and draft.get("customer_name"):
             customer_id = led.get_or_create_customer(draft["customer_name"])["id"]
+        if draft.get("payment_type", "cash") == "due" and customer_id is None:
+            raise HTTPException(
+                400, "বাকি বিক্রির জন্য ক্রেতা দরকার — কার নামে বাকি রাখব?"
+            )
+        for i in draft["items"]:
+            p = conn().execute(
+                "SELECT stock, name_bn, unit FROM products WHERE id=?",
+                (i["product_id"],),
+            ).fetchone()
+            if p is not None and float(i["qty"]) > float(p["stock"]):
+                raise HTTPException(
+                    400,
+                    f"স্টকে {p['name_bn']} আছে {fmt_num(p['stock'])} {p['unit']}"
+                    " — এর বেশি বিক্রি হবে না",
+                )
         sale = led.create_sale(
             [{"product_id": i["product_id"], "qty": i["qty"]} for i in draft["items"]],
             customer_id=customer_id,
@@ -164,7 +206,11 @@ def confirm_draft(draft_id: int):
         )
         result = {"sale": sale}
     elif draft["kind"] == "purchase":
+        if not draft.get("items"):
+            raise HTTPException(400, "কোনো পণ্য নেই — খালি ক্রয় সেভ হবে না")
         for i in draft["items"]:
+            if float(i["qty"]) <= 0:
+                raise HTTPException(400, "পরিমাণ শূন্যের বেশি হতে হবে")
             led.record_purchase(i["product_id"], i["qty"])
         result = {"purchased": draft["items"]}
     elif draft["kind"] == "due_payment":
@@ -173,10 +219,19 @@ def confirm_draft(draft_id: int):
             customer_id = led.get_or_create_customer(draft["customer_name"])["id"]
         if customer_id is None:
             raise HTTPException(400, "customer required for due payment")
-        due = led.record_due_payment(customer_id, draft["amount"])
+        amount = float(draft.get("amount") or 0)
+        if amount <= 0:
+            raise HTTPException(400, "জমার পরিমাণ শূন্যের বেশি হতে হবে")
+        due_now = led.customer_due(customer_id)
+        if amount > due_now:
+            raise HTTPException(
+                400, f"বাকি আছে মাত্র {fmt_taka(due_now)} — এর বেশি জমা নেওয়া যাবে না"
+            )
+        due = led.record_due_payment(customer_id, amount)
         result = {"remaining_due": due}
     elif draft["kind"] == "undo":
-        voided = led.void_last_sale()
+        target = draft.get("target_sale_id")
+        voided = led.void_sale(target) if target else led.void_last_sale()
         if voided is None:
             raise HTTPException(400, "nothing to undo")
         result = {"voided_sale": voided}
@@ -189,6 +244,13 @@ def confirm_draft(draft_id: int):
 
 @app.post("/api/drafts/{draft_id}/reject")
 def reject_draft(draft_id: int):
+    row = conn().execute(
+        "SELECT status FROM drafts WHERE id=?", (draft_id,)
+    ).fetchone()
+    if row is None:
+        raise HTTPException(404, "draft not found")
+    if row["status"] != "pending":
+        raise HTTPException(400, "draft already handled")
     conn().execute("UPDATE drafts SET status='rejected' WHERE id=?", (draft_id,))
     conn().commit()
     return {"ok": True}
@@ -224,6 +286,7 @@ def undo_last_sale():
 
 class ResolveIn(BaseModel):
     product_id: int
+    ambiguity_index: int | None = None
 
 
 class ItemsIn(BaseModel):
@@ -274,24 +337,35 @@ def _rebuild_items(raw_items):
 
 @app.post("/api/drafts/{draft_id}/resolve")
 def resolve_draft(draft_id: int, body: ResolveIn):
-    """Shopkeeper picked one option for an ambiguous item. Swap it in,
-    recompute, and unblock confirmation."""
+    """Shopkeeper picked one option for ONE ambiguous item. Only that
+    ambiguity is settled — any others stay open and keep confirm blocked."""
     draft = _load_draft(draft_id)
-    target = None
-    for it in draft.get("items", []):
-        if it.get("ambiguous"):
-            target = it
-            break
-    if target is None:
-        raise HTTPException(400, "no ambiguous item in this draft")
+    ambs = draft.get("ambiguities", [])
+    if not ambs:
+        raise HTTPException(400, "no ambiguity in this draft")
+    idx = body.ambiguity_index if body.ambiguity_index is not None else 0
+    if idx < 0 or idx >= len(ambs):
+        raise HTTPException(400, "ambiguity index out of range")
+    amb_items = [it for it in draft.get("items", []) if it.get("ambiguous")]
+    if idx >= len(amb_items):
+        raise HTTPException(400, "ambiguous item not found")
+    # Match the item by its option set when possible — with the Spark
+    # engine, search order and cart order need not be the same.
+    want = {o["product_id"] for o in ambs[idx].get("options", [])}
+    same_options = [
+        it for it in amb_items
+        if {o["product_id"] for o in it.get("options", [])} == want
+    ]
+    target = same_options[0] if same_options else amb_items[idx]
+    if body.product_id not in [o["product_id"] for o in target.get("options", [])]:
+        raise HTTPException(400, "choice is not one of the offered options")
     rebuilt = _rebuild_items([{"product_id": body.product_id, "qty": target["qty"]}])
     if not rebuilt:
         raise HTTPException(400, "invalid choice")
-    idx = draft["items"].index(target)
-    draft["items"][idx] = rebuilt[0]
-    draft["items"] = _rebuild_items(draft["items"])
+    pos = draft["items"].index(target)
+    draft["items"][pos] = rebuilt[0]
     draft["total"] = round(sum(i["line_total"] for i in draft["items"]), 2)
-    draft["ambiguities"] = []
+    draft["ambiguities"] = [a for j, a in enumerate(ambs) if j != idx]
     _store_draft(draft_id, draft)
     return {"draft": draft, "summary_bn": draft_summary_bn(draft)}
 

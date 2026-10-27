@@ -8,6 +8,15 @@
 > voice-transcribe test, (c) spoken eval set (~100 recorded commands),
 > (d) demo data/video polish. The day plan below stays as the schedule
 > for those remaining pieces.
+>
+> **Update, 27 Oct:** (a) and (b) done — live Spark tool-calling and
+> Bengali voice transcription verified end-to-end. Spoken eval batch 1
+> scored 11/12 through Meta ASR. An external audit's confirmed findings
+> were fixed the same day (confirm-step money guards, per-ambiguity
+> resolve, separator-free parsing, English units, natural questions);
+> the suite is now 39 tests passing, local-parser eval 68/68 with
+> per-item cart checks. Remaining: spoken eval batches toward ~100,
+> demo video, submission polish.
 
 ## Before app code (27 Oct morning)
 
@@ -15,7 +24,7 @@
    mistake; the real name is `comam` and the repo will be renamed later)
    and these files pushed as the first commits, so every commit is dated
    inside the hackathon window.
-2. **API connectivity:** set `MODEL_API_KEY` and run `test_api.py`
+2. **API connectivity:** set `MODEL_API_KEY` and run `check_api.py`
    (in this draft folder). It must print a Bengali answer from
    `muse-spark-1.3` (Standard). If it fails, debug model name / key /
    account access before touching any UI.

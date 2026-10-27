@@ -81,3 +81,63 @@ def test_new_customer_upi_flow_and_unknown_block():
     assert sale["payment_type"] == "upi" and sale["total"] == 31
     names = [c["name"] for c in client.get("/api/customers").json()]
     assert "জয় সরকার" in names
+
+
+def _cmd(text):
+    return client.post("/api/command", json={"text": text}).json()
+
+
+def test_confirm_guards_money():
+    # due sale without a customer: the money would be tracked nowhere
+    d = _cmd("দুই কেজি চিনি বাকিতে")
+    assert client.post(f"/api/drafts/{d['draft_id']}/confirm").status_code == 400
+    # oversell beyond stock
+    d = _cmd("একশো কেজি চিনি নগদ")
+    assert client.post(f"/api/drafts/{d['draft_id']}/confirm").status_code == 400
+    # empty sale (items edited away)
+    d = _cmd("এক কেজি চিনি নগদ")
+    client.put(f"/api/drafts/{d['draft_id']}/items", json={"items": []})
+    assert client.post(f"/api/drafts/{d['draft_id']}/confirm").status_code == 400
+
+
+def test_overpayment_blocked_exact_payment_ok():
+    d = _cmd("দুই কেজি চিনি করিমদার নামে বাকিতে")
+    assert client.post(f"/api/drafts/{d['draft_id']}/confirm").status_code == 200
+    d = _cmd("করিমদা তিনশো টাকা জমা দিলেন")
+    assert client.post(f"/api/drafts/{d['draft_id']}/confirm").status_code == 400
+    d = _cmd("করিমদা একশো বিশ টাকা জমা দিলেন")
+    r = client.post(f"/api/drafts/{d['draft_id']}/confirm")
+    assert r.status_code == 200 and r.json()["result"]["remaining_due"] == 0
+
+
+def test_reject_semantics():
+    assert client.post("/api/drafts/9999/reject").status_code == 404
+    d = _cmd("এক কেজি চিনি নগদ")
+    assert client.post(f"/api/drafts/{d['draft_id']}/reject").status_code == 200
+    assert client.post(f"/api/drafts/{d['draft_id']}/reject").status_code == 400
+
+
+def test_two_ambiguities_resolve_one_by_one():
+    d = _cmd("দুইটা বিস্কুট আর একটা বিস্কুট")
+    did = d["draft_id"]
+    r = client.post(f"/api/drafts/{did}/resolve",
+                    json={"product_id": 11, "ambiguity_index": 0})
+    assert r.status_code == 200
+    assert len(r.json()["draft"]["ambiguities"]) == 1
+    # still blocked: the second item is still a guess
+    assert client.post(f"/api/drafts/{did}/confirm").status_code == 400
+    r = client.post(f"/api/drafts/{did}/resolve",
+                    json={"product_id": 10, "ambiguity_index": 0})
+    assert r.status_code == 200
+    assert client.post(f"/api/drafts/{did}/confirm").status_code == 200
+
+
+def test_undo_voids_the_sale_from_draft_time():
+    d1 = _cmd("এক কেজি চিনি নগদ")
+    s1 = client.post(f"/api/drafts/{d1['draft_id']}/confirm").json()["result"]["sale"]["id"]
+    du = _cmd("শেষ বিক্রিটা বাতিল করো")
+    d2 = _cmd("এক কেজি চাল নগদ")
+    s2 = client.post(f"/api/drafts/{d2['draft_id']}/confirm").json()["result"]["sale"]["id"]
+    r = client.post(f"/api/drafts/{du['draft_id']}/confirm")
+    assert r.status_code == 200
+    assert r.json()["result"]["voided_sale"]["id"] == s1 != s2

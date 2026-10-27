@@ -43,19 +43,28 @@ export default function App() {
     if (!resp?.draft_id) return;
     setBusy(true);
     try {
-      await api.updateItems(resp.draft_id, editItems.map((i) => ({ product_id: i.product_id, qty: i.qty })));
+      // Only sale/purchase drafts have editable items — due payments and
+      // undos confirm directly (the items endpoint rejects other kinds).
+      if (resp.kind === "sale" || resp.kind === "purchase") {
+        await api.updateItems(resp.draft_id, editItems.map((i) => ({ product_id: i.product_id, qty: i.qty })));
+      }
       await api.confirm(resp.draft_id);
       setResp(null); setText(""); await refresh();
     } catch (e) { setError(String(e)); }
     setBusy(false);
   };
 
-  const resolveDraft = async (productId: number) => {
+  const resolveDraft = async (productId: number, ambiguityIndex: number) => {
     if (!resp?.draft_id) return;
     setBusy(true);
     try {
-      const r = await api.resolve(resp.draft_id, productId);
-      setResp({ ...resp, draft: r.draft, summary_bn: r.summary_bn, needs_clarification: false });
+      const r = await api.resolve(resp.draft_id, productId, ambiguityIndex);
+      setResp({
+        ...resp,
+        draft: r.draft,
+        summary_bn: r.summary_bn,
+        needs_clarification: (r.draft?.ambiguities?.length ?? 0) > 0,
+      });
     } catch (e) { setError(String(e)); }
     setBusy(false);
   };
@@ -149,7 +158,7 @@ export default function App() {
           <div>কোনটা বলছেন?</div>
           <div className="row">
             {a.options.map((o) => (
-              <button key={o.product_id} onClick={() => resolveDraft(o.product_id)} disabled={busy}>
+              <button key={o.product_id} onClick={() => resolveDraft(o.product_id, idx)} disabled={busy}>
                 {o.name_bn} ({taka(o.price)})
               </button>
             ))}

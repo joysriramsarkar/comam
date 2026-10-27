@@ -1,6 +1,6 @@
 # comam AI — Bengali Voice-First AI Shop Assistant
 
-> Repository: `conin` (created 2026-10-26; will be renamed `comam`) · Created 2026-10-26 for the Meta Global AI
+> Repository: `comam` (created 2026-10-26) · Created 2026-10-26 for the Meta Global AI
 > Developer Hackathon — this project is being designed and built in the
 > open during the hackathon window, 26 Oct – 4 Nov 2026.
 
@@ -45,6 +45,10 @@ Mic ─► Muse Voice Transcribe (Bengali) ─► Muse Spark (Standard, tool cal
 
 The split is the point: **AI understands language; code does the accounting.** Every total, stock change, and due balance is computed by deterministic code.
 
+## Why not a general-purpose phone agent?
+
+General phone agents can operate almost any app by looking at screenshots and tapping — but every step is a visual guess, and in a shop a wrong tap is *wrong money*, written into the books before anyone notices. comam takes the opposite approach where money is concerned: **general agents guess their way through screens; comam never guesses with money.** The AI only understands the Bengali — totals, stock and dues are computed by deterministic code, nothing is saved before the shopkeeper confirms, and every action is auditable and undoable. That reliability is measured, not claimed (see the eval results below), and it is fast and cheap enough for a hundred bills a day, with an offline parser fallback when the network drops. Nor is comam meant to stay a standalone till: its understanding layer (speech → verified draft) is built to plug into existing POS systems through their APIs — the Bengali voice layer on top of the software shops already use.
+
 ## Models used
 
 - **Runtime:** `muse-spark-1.3` (Standard) via the Meta Model API (`https://api.meta.ai/v1`) — understands Bengali instructions and calls the whitelisted tools.
@@ -55,11 +59,14 @@ The split is the point: **AI understands language; code does the accounting.** E
 
 **26 Oct (Day 0):** backend complete (billing spine, due ledger, reports, draft→confirm, ambiguity resolution, editable drafts), frontend built, demo seed data in place. 20 automated tests pass.
 
-**27 Oct (Day 1):** voice verified end-to-end — a real spoken Bengali bill (the founder's own voice note) transcribed cleanly by `muse-voice-transcribe-1.0` and parsed into a draft. That one real sentence exposed four parser gaps, all fixed the same morning: (1) items missing from the catalog (ম্যাগি) are now flagged with the price the shopkeeper stated, never silently dropped, and confirm is blocked until the draft is reviewed; (2) a spoken price picks the variant — "দশ টাকার বিস্কুট" is the ৳10 small pack ×1, not 10 big packs; (3) UPI (ইউপিআই) is a payment type alongside cash and due; (4) a new customer's name is captured and the customer is created on confirm. Spoken-eval batch 1 (12 dictated sentences) then found two more: the তিরিশ spelling variant and তিনশো-type "-শো" hundreds are now recognised, and customer matching tolerates a one-letter dictation misspelling (সুনিতা → সুমিতা) with a clear-winner rule. 28 automated tests pass.
+**27 Oct (Day 1):** voice verified end-to-end — a real spoken Bengali bill (the founder's own voice note) transcribed cleanly by `muse-voice-transcribe-1.0` and parsed into a draft. That one real sentence exposed four parser gaps, all fixed the same morning: (1) items missing from the catalog (ম্যাগি) are now flagged with the price the shopkeeper stated, never silently dropped, and confirm is blocked until the draft is reviewed; (2) a spoken price picks the variant — "দশ টাকার বিস্কুট" is the ৳10 small pack ×1, not 10 big packs; (3) UPI (ইউপিআই) is a payment type alongside cash and due; (4) a new customer's name is captured and the customer is created on confirm. Spoken-eval batch 1 (12 dictated sentences) then found two more: the তিরিশ spelling variant and তিনশো-type "-শো" hundreds are now recognised, and customer matching tolerates a one-letter dictation misspelling (সুনিতা → সুমিতা) with a clear-winner rule. Re-recorded as real voice and run through Meta ASR, batch 1 scored **11/12** end-to-end.
 
-**Local-parser eval (offline baseline, `eval/commands.json`, 54 commands):**
-- Intent + customer accuracy: **54/54 (100%)**
-- Sale/purchase total accuracy: **41/41 (100%)** — totals always computed by code from DB prices
+**27 Oct (Day 1, hardening):** an external audit probed the app with hostile inputs; every confirmed finding was fixed the same day, with each probe kept as a regression test. Highlights: money guards now sit at the confirm step, so *both* engines are held to them — a due sale without a customer, an empty bill, selling more than the stock, and paying back more than the due are all refused with a Bengali explanation; resolving one ambiguity no longer clears the others; undo voids the sale that was last *when the command was spoken*. The parser also learned separator-free speech ("এক কেজি চিনি দুইটা সাবান" → both items), natural questions ("রহিমের কত টাকা বাকি"), English units ("500 g sugar" = 0.5 kg, not 500 kg), and compound numbers (দুইশ পঞ্চাশ, সাড়ে পাঁচশ, দেড় হাজার). 39 automated tests pass.
+
+**Local-parser eval (offline baseline, `eval/commands.json`, 68 commands):**
+- Intent + customer accuracy: **68/68 (100%)**
+- Sale/purchase total accuracy: **48/48 (100%)** — totals always computed by code from DB prices
+- Cart accuracy (exact items + quantities, where specified): **7/7 (100%)**
 - Ambiguity detection: flagged, never guessed (বিস্কুট → two pack sizes)
 
 The same command set will be run through the Muse Spark path and with recorded voices (~100 spoken commands) during the hackathon; results will be added here. Run it yourself: `python scripts/run_eval.py`.
@@ -88,12 +95,12 @@ This project is designed, written, and built entirely during the hackathon (26 O
 ```bash
 # 1) connectivity check (needs your key)
 export MODEL_API_KEY="your-key"        # PowerShell: $env:MODEL_API_KEY = "your-key"
-python test_api.py
+python check_api.py
 
 # 2) backend
 cd backend
 python -m venv .venv && .venv/bin/pip install -r requirements.txt   # Windows: .venv\Scripts\pip
-cd .. && python scripts/seed_demo.py   # optional: 7 days of demo sales
+cd .. && python scripts/seed_demo.py   # optional: 14 days of demo sales (idempotent)
 cd backend && .venv/bin/uvicorn app.main:app --reload   # http://localhost:8000
 
 # 3) frontend (new terminal)

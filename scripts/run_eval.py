@@ -1,7 +1,9 @@
 """Eval harness for the deterministic local parser (offline baseline).
 
 Runs eval/commands.json through parser_local and scores:
-kind accuracy, total accuracy (sale/purchase), ambiguity detection.
+kind accuracy, total accuracy (sale/purchase), ambiguity detection, and
+per-item cart accuracy (cases that carry an "items" expectation — the
+exact products and quantities, so a wrong cart with a right total fails).
 The Spark path gets the same set later, once an API key is configured —
 voice recordings (the ~100-command spoken set) plug into the same file.
 
@@ -20,6 +22,7 @@ cases = json.loads((ROOT / "eval" / "commands.json").read_text(encoding="utf-8")
 conn = init_db(get_conn(":memory:"))
 
 kind_ok = total_ok = total_n = amb_ok = amb_n = 0
+item_ok = item_n = 0
 failures = []
 for case in cases:
     d = parse_command(conn, case["text"])
@@ -44,6 +47,13 @@ for case in cases:
         aok = bool(d.get("ambiguities")) == case["ambiguous"]
         amb_ok += aok
         ok = ok and aok
+    if "items" in case:
+        item_n += 1
+        got_items = sorted((i["name_bn"], round(float(i["qty"]), 3)) for i in d.get("items", []))
+        exp_items = sorted((i["name_bn"], round(float(i["qty"]), 3)) for i in case["items"])
+        iok = got_items == exp_items
+        item_ok += iok
+        ok = ok and iok
     if not ok:
         failures.append((case, d))
 
@@ -53,6 +63,8 @@ print(f"intent/customer accuracy: {kind_ok}/{n} = {kind_ok / n * 100:.1f}%")
 print(f"total accuracy (sale/purchase): {total_ok}/{total_n} = {total_ok / total_n * 100:.1f}%")
 if amb_n:
     print(f"ambiguity detection: {amb_ok}/{amb_n}")
+if item_n:
+    print(f"cart accuracy (exact items): {item_ok}/{item_n} = {item_ok / item_n * 100:.1f}%")
 if failures:
     print("\nfailures:")
     for case, d in failures:

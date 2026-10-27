@@ -6,13 +6,15 @@ clarification question instead of guessing.
 """
 import difflib
 import re
+import unicodedata
 
 from .db import get_conn, init_db
 
 
 def normalize(text: str) -> str:
-    text = text.strip().lower()
-    text = text.replace("য়", "য়").replace("ড়", "ড়")
+    # NFC folds decomposed sequences (য + ়) into the precomposed য়/ড় —
+    # ASR and keyboards produce both spellings of the same name.
+    text = unicodedata.normalize("NFC", text.strip().lower())
     text = re.sub(r"[\s\-_]+", " ", text)
     text = re.sub(r"[।,;:!?\"'()]", "", text)
     return text.strip()
@@ -113,12 +115,16 @@ def extract_new_customer_name(conn, text):
             continue
         words = m.group(1).split()
         # drop any leading run of stop words the regex may have swallowed
-        while words and words[0] in _NAME_STOP:
+        # ('নতুন ক্রেতা জয় সরকারের নামে' must not keep the prefix either)
+        while words and (words[0] in _NAME_STOP or words[0] in ("নতুন", "ক্রেতা")):
             words.pop(0)
         if not words or any(w in _NAME_STOP for w in words):
             continue
-        # strip honorifics: করিমদা -> করিম, জয়দার -> জয়
+        # strip a genitive ending: সরকারের -> সরকার
         last = words[-1]
+        if last.endswith("ের") and len(last) > 3:
+            words[-1] = last = last[:-2]
+        # strip honorifics: করিমদা -> করিম, জয়দার -> জয়
         if last.endswith("দার") and len(last) > 3:
             words[-1] = last[:-3]
         elif last.endswith("দা") and len(last) > 3:
@@ -131,6 +137,41 @@ def extract_new_customer_name(conn, text):
             continue  # that phrase is a product, not a person
         return name
     return None
+
+
+def extract_payer_name(conn, text):
+    """Name at the START of a due-payment sentence with no কে/নামে marker:
+    'জয় সরকার ২০০ টাকা জমা দিলেন' -> 'জয় সরকার'. Leading Bengali words
+    up to the first number token; conservative like extract_new_customer_name."""
+    from .bn import WORD_NUMBERS, bn_to_ascii
+
+    words = normalize(text).split()
+    name_words = []
+    for w in words:
+        if len(name_words) >= 3:
+            break
+        if (re.fullmatch(r"\d+(\.\d+)?", bn_to_ascii(w)) or w in WORD_NUMBERS
+                or w in _NAME_STOP or w in ("সাড়ে", "পৌনে", "সোয়া", "দেড়", "আড়াই")):
+            break
+        if not re.fullmatch(r"[\u0980-\u09FF]+", w):
+            break
+        name_words.append(w)
+    if not name_words or len(name_words) == len(words):
+        return None  # stopped immediately, or never reached a number
+    last = name_words[-1]
+    if last.endswith("ের") and len(last) > 3:
+        name_words[-1] = last = last[:-2]
+    if last.endswith("দার") and len(last) > 3:
+        name_words[-1] = last[:-3]
+    elif last.endswith("দা") and len(last) > 3:
+        name_words[-1] = last[:-2]
+    name = " ".join(name_words).strip()
+    if not name or any(w in _NAME_STOP for w in name_words):
+        return None
+    matches, _ = search_products(conn, name)
+    if matches and matches[0][1] >= 0.9:
+        return None
+    return name
 
 
 if __name__ == "__main__":

@@ -1,4 +1,9 @@
-"""Seed 7 days of demo sales so reports/low-stock have something to say.
+"""Seed 14 days of demo sales so reports/low-stock have something to say
+— including a previous week, so week-vs-week comparison has a baseline.
+
+Idempotent: existing sales/payments are cleared and product stock is
+restored to the seed values first, so re-running gives the same demo.
+
 Run: python scripts/seed_demo.py  (creates backend/comin.db if needed)"""
 import random
 import sys
@@ -6,16 +11,26 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
-from app.db import get_conn, init_db          # noqa: E402
-from app.ledger import Ledger               # noqa: E402
+from app.db import SEED_PRODUCTS, get_conn, init_db   # noqa: E402
+from app.ledger import Ledger                          # noqa: E402
 
 random.seed(42)
 conn = init_db(get_conn())
 led = Ledger(conn)
+
+# --- reset to a clean demo state -------------------------------------
+conn.execute("DELETE FROM sale_items")
+conn.execute("DELETE FROM sales")
+conn.execute("DELETE FROM due_payments")
+for row in SEED_PRODUCTS:
+    # tuple: name_bn, name_en, aliases, unit, price, cost, stock, threshold
+    conn.execute("UPDATE products SET stock=? WHERE name_en=?", (row[6], row[1]))
+conn.commit()
+
 products = conn.execute("SELECT * FROM products").fetchall()
 customers = conn.execute("SELECT * FROM customers").fetchall()
 
-for days_ago in range(7, 0, -1):
+for days_ago in range(14, 0, -1):
     when = datetime.now() - timedelta(days=days_ago)
     for _ in range(random.randint(3, 6)):
         chosen = random.sample(products, random.randint(1, 3))
@@ -38,5 +53,6 @@ for c in customers[:2]:
     if led.customer_due(c["id"]) > 100:
         led.record_due_payment(c["id"], 100)
 print("seeded. summary(7d):", led.sales_summary(7))
+print("week compare:", led.week_compare())
 print("dues:", led.all_dues())
 print("low stock:", [p["name_bn"] for p in led.low_stock()])

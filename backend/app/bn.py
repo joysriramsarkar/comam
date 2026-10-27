@@ -67,7 +67,29 @@ UNITS = {
     "মিলি": ("litre", 0.001), "টা": ("piece", 1.0), "টে": ("piece", 1.0),
     "টি": ("piece", 1.0), "খানা": ("piece", 1.0), "পিস": ("piece", 1.0),
     "ডজন": ("piece", 12.0),
+    # English / Banglish units — shopkeepers mix them in ("500 g sugar").
+    # Without these, 'g' is ignored and 500 g silently becomes 500 kg.
+    "g": ("kg", 0.001), "gm": ("kg", 0.001), "gram": ("kg", 0.001),
+    "grams": ("kg", 0.001), "kg": ("kg", 1.0), "kilo": ("kg", 1.0),
+    "kilos": ("kg", 1.0), "l": ("litre", 1.0), "litre": ("litre", 1.0),
+    "litres": ("litre", 1.0), "liter": ("litre", 1.0), "liters": ("litre", 1.0),
+    "ml": ("litre", 0.001), "dozen": ("piece", 12.0), "pc": ("piece", 1.0),
+    "pcs": ("piece", 1.0), "piece": ("piece", 1.0),
 }
+
+
+def _rest_under(tokens, i, limit):
+    """A plain following number below `limit` (digits or a 0-99 word),
+    used to compose numbers like দুইশ পঞ্চাশ (250)."""
+    if i >= len(tokens):
+        return None, i
+    tok = tokens[i]
+    ascii_tok = bn_to_ascii(tok)
+    if re.fullmatch(r"\d+(\.\d+)?", ascii_tok) and float(ascii_tok) < limit:
+        return float(ascii_tok), i + 1
+    if tok in WORD_NUMBERS and WORD_NUMBERS[tok] < limit:
+        return float(WORD_NUMBERS[tok]), i + 1
+    return None, i
 
 
 def _base_number(tokens, i):
@@ -85,11 +107,19 @@ def _base_number(tokens, i):
         # colloquial hundreds: দুইশ (200), তিনশ (300), পাঁচশ (500)
         value = float(WORD_NUMBERS[tok[:-1]] * 100)
         i += 1
+        rest, j = _rest_under(tokens, i, 100)  # দুইশ পঞ্চাশ = 250
+        if rest is not None:
+            value += rest
+            i = j
     elif tok.endswith("শো") and tok[:-2] in WORD_NUMBERS and WORD_NUMBERS[tok[:-2]] < 10:
         # same hundreds with the -ো ending dictation often produces:
         # দুইশো (200), তিনশো (300), পাঁচশো (500)
         value = float(WORD_NUMBERS[tok[:-2]] * 100)
         i += 1
+        rest, j = _rest_under(tokens, i, 100)  # দুইশো পঞ্চাশ = 250
+        if rest is not None:
+            value += rest
+            i = j
     elif tok in WORD_NUMBERS:
         value = float(WORD_NUMBERS[tok])
         i += 1
@@ -120,9 +150,17 @@ def parse_number_at(tokens, i):
     if i >= len(tokens):
         return None, i
     tok = tokens[i]
+    if tok.lower() == "half":
+        return 0.5, i + 1
     if tok == "সাড়ে":
         base, j = _base_number(tokens, i + 1)
         if base is not None:
+            if base >= 100:
+                # সাড়ে পাঁচশ = 550, সাড়ে তিন হাজার = 3500: the "half"
+                # is half of the hundred/thousand unit, not 0.5.
+                unit = 1000 if base >= 1000 else 100
+                if base % unit == 0:
+                    return base + unit / 2, j
             return base + 0.5, j
         return None, i
     if tok == "পৌনে":
@@ -136,6 +174,9 @@ def parse_number_at(tokens, i):
             return base + 0.25, j
         return None, i
     if tok in FRACTION_WORDS:
+        # দেড় হাজার = 1500, আড়াই হাজার = 2500, আধা হাজার = 500
+        if i + 1 < len(tokens) and tokens[i + 1] == "হাজার":
+            return FRACTION_WORDS[tok] * 1000, i + 2
         return FRACTION_WORDS[tok], i + 1
     if tok in ("একশ", "একশো", "শত"):
         rest, j = _base_number(tokens, i + 1)

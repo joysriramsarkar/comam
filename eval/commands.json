@@ -283,5 +283,136 @@
   "total": 95,
   "customer": "সুমিতা",
   "payment_type": "due"
+ },
+ {
+  "text": "500 g sugar",
+  "kind": "sale",
+  "total": 30,
+  "items": [
+   {
+    "name_bn": "চিনি",
+    "qty": 0.5
+   }
+  ]
+ },
+ {
+  "text": "half kg sugar",
+  "kind": "sale",
+  "total": 30,
+  "items": [
+   {
+    "name_bn": "চিনি",
+    "qty": 0.5
+   }
+  ]
+ },
+ {
+  "text": "দুইশ পঞ্চাশ গ্রাম চিনি",
+  "kind": "sale",
+  "total": 15,
+  "items": [
+   {
+    "name_bn": "চিনি",
+    "qty": 0.25
+   }
+  ]
+ },
+ {
+  "text": "সাড়ে পাঁচশ টাকা জমা দিলেন রহিমদা",
+  "kind": "due_payment",
+  "amount": 550,
+  "customer": "রহিম"
+ },
+ {
+  "text": "দেড় হাজার টাকা জমা দিলেন রহিমদা",
+  "kind": "due_payment",
+  "amount": 1500,
+  "customer": "রহিম"
+ },
+ {
+  "text": "রহিমের কত টাকা বাকি",
+  "kind": "due_query",
+  "customer": "রহিম"
+ },
+ {
+  "text": "আজ কত টাকা বিক্রি হয়েছে",
+  "kind": "report",
+  "report": "sales_summary"
+ },
+ {
+  "text": "গত সপ্তাহে কত টাকা বিক্রি হয়েছে",
+  "kind": "report",
+  "report": "week_compare"
+ },
+ {
+  "text": "কোন মাল শেষ",
+  "kind": "report",
+  "report": "low_stock"
+ },
+ {
+  "text": "এক কেজি চিনি দুইটা সাবান",
+  "kind": "sale",
+  "total": 130,
+  "items": [
+   {
+    "name_bn": "চিনি",
+    "qty": 1
+   },
+   {
+    "name_bn": "সাবান",
+    "qty": 2
+   }
+  ]
+ },
+ {
+  "text": "দুইটা সাবান এক কেজি চিনি",
+  "kind": "sale",
+  "total": 130,
+  "items": [
+   {
+    "name_bn": "সাবান",
+    "qty": 2
+   },
+   {
+    "name_bn": "চিনি",
+    "qty": 1
+   }
+  ]
+ },
+ {
+  "text": "এক কেজি চিনি দুইটা সাবান আধা কেজি মসুর ডাল",
+  "kind": "sale",
+  "total": 190,
+  "items": [
+   {
+    "name_bn": "চিনি",
+    "qty": 1
+   },
+   {
+    "name_bn": "সাবান",
+    "qty": 2
+   },
+   {
+    "name_bn": "মসুর ডাল",
+    "qty": 0.5
+   }
+  ]
+ },
+ {
+  "text": "জয় সরকার ২০০ টাকা জমা দিলেন",
+  "kind": "due_payment",
+  "amount": 200,
+  "customer": "জয় সরকার"
+ },
+ {
+  "text": "2 dozen eggs",
+  "kind": "sale",
+  "total": 168,
+  "items": [
+   {
+    "name_bn": "ডিম",
+    "qty": 24
+   }
+  ]
  }
 ]

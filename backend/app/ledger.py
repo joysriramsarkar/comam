@@ -79,9 +79,17 @@ class Ledger:
         d["items"] = [dict(i) for i in items]
         return d
 
-    def void_last_sale(self):
+    def last_sale(self):
         s = self.conn.execute(
             "SELECT * FROM sales WHERE status='confirmed' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return dict(s) if s is not None else None
+
+    def void_sale(self, sale_id):
+        """Void one specific confirmed sale and restore its stock.
+        Returns the sale dict, or None if it is not voidable."""
+        s = self.conn.execute(
+            "SELECT * FROM sales WHERE id=? AND status='confirmed'", (sale_id,)
         ).fetchone()
         if s is None:
             return None
@@ -96,6 +104,12 @@ class Ledger:
         self._audit("sale_voided", f"sale {s['id']} total {s['total']} undone")
         self.conn.commit()
         return dict(s)
+
+    def void_last_sale(self):
+        s = self.last_sale()
+        if s is None:
+            return None
+        return self.void_sale(s["id"])
 
     # ---------- due ledger (বাকি খাতা) ----------
     def record_due_payment(self, customer_id, amount, note=""):
@@ -140,8 +154,13 @@ class Ledger:
         self.conn.commit()
 
     # ---------- reports ----------
-    def sales_summary(self, days=1):
-        since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+    def sales_summary(self, days=1, calendar=False):
+        if calendar and days == 1:
+            # "আজ" means the calendar day, so it agrees with daily_sales()
+            # and the chart — not a rolling 24-hour window.
+            since = datetime.now().strftime("%Y-%m-%d 00:00:00")
+        else:
+            since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
         row = self.conn.execute(
             "SELECT COUNT(*) n, COALESCE(SUM(total),0) s FROM sales"
             " WHERE status='confirmed' AND created_at>=?",

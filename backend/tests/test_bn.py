@@ -49,3 +49,15 @@ def test_spelling_variants_from_dictation():
     assert find_number_phrases("তিনশো টাকা")[0][0] == 300
     assert find_number_phrases("পাঁচশো টাকা")[0][0] == 500
     assert find_number_phrases("দুইশো টাকা")[0][0] == 200
+
+
+def test_compound_hundreds_and_large_fractions():
+    # audit probes (27 Oct): composed hundreds and fraction-of-unit forms
+    assert find_number_phrases("দুইশ পঞ্চাশ")[0][0] == 250
+    assert find_number_phrases("দুইশো পঞ্চাশ")[0][0] == 250
+    assert find_number_phrases("সাড়ে পাঁচশ")[0][0] == 550
+    assert find_number_phrases("সাড়ে তিন হাজার")[0][0] == 3500
+    assert find_number_phrases("দেড় হাজার")[0][0] == 1500
+    assert find_number_phrases("আড়াই হাজার")[0][0] == 2500
+    assert find_number_phrases("সাড়ে চার")[0][0] == 4.5
+    assert p("half") == 0.5

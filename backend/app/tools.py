@@ -150,10 +150,12 @@ class DraftSession:
         self.payment_type = "cash"
         self.due_payment = None
         self.ambiguities = []
+        self.unknown_items = []
+        self._amb_options = {}  # product_id -> options of an ambiguous search
 
     def to_draft(self, raw=""):
         if self.due_payment:
-            return {
+            draft = {
                 "kind": "due_payment",
                 "customer": self.customer,
                 "amount": self.due_payment["amount"],
@@ -161,6 +163,9 @@ class DraftSession:
                 "raw": raw,
                 "engine": "spark",
             }
+            if self.customer_name and not self.customer:
+                draft["customer_name"] = self.customer_name
+            return draft
         total = round(sum(i["line_total"] for i in self.items), 2)
         draft = {
             "kind": "sale" if self.items else "unknown",
@@ -172,6 +177,10 @@ class DraftSession:
             "raw": raw,
             "engine": "spark",
         }
+        if self.unknown_items:
+            # Same shape as the local parser: confirm stays blocked until
+            # the shopkeeper reviews the draft, so nothing is dropped.
+            draft["unknown_items"] = self.unknown_items
         if self.customer_name and not self.customer:
             draft["customer_name"] = self.customer_name
             draft["customer"] = {"id": None, "name": self.customer_name}
@@ -185,6 +194,25 @@ def dispatch(session: DraftSession, name: str, args: dict):
     led = Ledger(conn)
     if name == "search_product":
         matches, ambiguous = search_products(conn, args["query"])
+        if not matches:
+            # Never let a spoken item vanish: it lands on the draft as an
+            # unknown item, exactly like the local parser's drafts.
+            if not any(u["text"] == args["query"] for u in session.unknown_items):
+                session.unknown_items.append(
+                    {"text": args["query"], "qty": 1.0, "stated_price": None}
+                )
+        if ambiguous:
+            options = [
+                {"product_id": p["id"], "name_bn": p["name_bn"], "price": p["price"]}
+                for p, _ in matches[:3]
+            ]
+            if not any(a["text"] == args["query"] for a in session.ambiguities):
+                session.ambiguities.append(
+                    {"text": args["query"], "options": options,
+                     "product_id": matches[0][0]["id"]}
+                )
+            for o in options:
+                session._amb_options[o["product_id"]] = options
         return {
             "matches": [
                 {
@@ -205,16 +233,22 @@ def dispatch(session: DraftSession, name: str, args: dict):
         if p is None:
             return {"error": "unknown product"}
         qty = float(args["qty"])
-        session.items.append(
-            {
-                "product_id": p["id"],
-                "name_bn": p["name_bn"],
-                "qty": qty,
-                "unit": p["unit"],
-                "unit_price": p["price"],
-                "line_total": round(p["price"] * qty, 2),
-            }
-        )
+        if qty <= 0:
+            return {"error": "qty must be positive"}
+        item = {
+            "product_id": p["id"],
+            "name_bn": p["name_bn"],
+            "qty": qty,
+            "unit": p["unit"],
+            "unit_price": p["price"],
+            "line_total": round(p["price"] * qty, 2),
+        }
+        if p["id"] in session._amb_options:
+            # Picked from an ambiguous search: flag it so confirm stays
+            # blocked until the shopkeeper resolves it, as locally.
+            item["ambiguous"] = True
+            item["options"] = session._amb_options[p["id"]]
+        session.items.append(item)
         return {"added": p["name_bn"], "qty": qty}
     if name == "set_customer":
         c = conn.execute(
@@ -236,6 +270,8 @@ def dispatch(session: DraftSession, name: str, args: dict):
         ).fetchone()
         if c is None:
             return {"error": "unknown customer"}
+        if float(args["amount"]) <= 0:
+            return {"error": "amount must be positive"}
         session.customer = {"id": c["id"], "name": c["name"]}
         session.due_payment = {"amount": float(args["amount"])}
         return {"drafted_payment_for": c["name"], "amount": args["amount"]}

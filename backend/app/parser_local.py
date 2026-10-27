@@ -7,7 +7,13 @@ Ambiguity is reported, never guessed.
 import re
 
 from .bn import UNITS, fmt_taka, find_number_phrases, parse_number_at
-from .catalog import extract_new_customer_name, find_customer, normalize, search_products
+from .catalog import (
+    extract_new_customer_name,
+    extract_payer_name,
+    find_customer,
+    normalize,
+    search_products,
+)
 
 PIECE_WORDS = ("টে", "টা", "টি", "খানা", "পিস")
 
@@ -31,15 +37,45 @@ def _extract_stated_price(segment):
     return None, segment
 
 
+def _tail_after_product(rest, product):
+    """Text after the matched product's name inside `rest` — with no spoken
+    separator ('এক কেজি চিনি দুইটা সাবান'), the next item hides there.
+    Empty when the product name is not found verbatim (fuzzy match)."""
+    names = [product["name_bn"], product["name_en"]] + [
+        a.strip() for a in product["aliases"].split(",") if a.strip()
+    ]
+    end = None
+    for n in names:
+        idx = rest.find(n)
+        if idx >= 0 and (end is None or idx + len(n) > end):
+            end = idx + len(n)
+    if end is None:
+        return ""
+    return rest[end:].strip(" ,।")
+
+
 def _parse_item_segment(conn, segment):
     """One segment like 'দুই কেজি চিনি' or '৫০০ গ্রাম মসুর ডাল' or 'তিনটে সাবান'.
-    Returns (item_or_None, ambiguity_or_None, leftover_text, info) where
-    info carries qty/stated_price for unknown-item reporting."""
+    Returns (item_or_None, ambiguity_or_None, leftover_text, info, tail) where
+    info carries qty/stated_price for unknown-item reporting, and tail is any
+    further item text hiding after the matched product (no separator)."""
     stated_price, segment = _extract_stated_price(segment)
     phrases = find_number_phrases(segment)
+    # A piece-suffixed number ('দুইটা') is not a find_number_phrases phrase,
+    # but it can precede a real phrase that belongs to a LATER item
+    # ('দুইটা সাবান আধা কেজি মসুর ডাল' — আধা is the third item's qty).
+    # Whichever quantity signal starts first owns this segment.
+    # NOTE: no \b here — Bengali vowel signs are combining marks, so
+    # Python's \b fails after them. Use an explicit lookahead instead.
+    pm = re.search(r"(\S+?)(টে|টা|টি|খানা)(?=$|[\s,।])", segment)
+    pm_val = None
+    if pm:
+        pm_val, _ = parse_number_at([pm.group(1)], 0)
+        if pm_val is None:
+            pm = None
     qty = None
     qty_span = None
-    if phrases:
+    if phrases and (pm is None or phrases[0][1] <= pm.start()):
         qty, s, e = phrases[0]
         qty_span = (s, e)
     unit_factor = 1.0
@@ -49,22 +85,21 @@ def _parse_item_segment(conn, segment):
         after = segment[qty_span[1]:].strip()
         for uw, (uk, factor) in sorted(UNITS.items(), key=lambda kv: -len(kv[0])):
             if after.startswith(uw):
+                if uw.isascii():
+                    # Latin units must end at a word boundary, or 'g'
+                    # would match the start of any following word.
+                    nxt = after[len(uw): len(uw) + 1]
+                    if nxt and nxt not in " ,।":
+                        continue
                 unit_kind, unit_factor = uk, factor
                 rest = (segment[: qty_span[0]] + " " + after[len(uw):]).strip()
                 break
         else:
             rest = (segment[: qty_span[0]] + " " + segment[qty_span[1]:]).strip()
-    if qty is None:
-        # piece suffix stuck to number word: 'তিনটে' handled by find_number_phrases?
-        # NOTE: no \b here — Bengali vowel signs are combining marks, so
-        # Python's \b fails after them. Use an explicit lookahead instead.
-        m = re.search(r"(\S+?)(টে|টা|টি|খানা)(?=$|[\s,।])", segment)
-        if m:
-            v, _ = parse_number_at([m.group(1)], 0)
-            if v is not None:
-                qty = v
-                unit_kind = "piece"
-                rest = (segment[: m.start()] + " " + segment[m.end():]).strip()
+    if qty is None and pm is not None:
+        qty = pm_val
+        unit_kind = "piece"
+        rest = (segment[: pm.start()] + " " + segment[pm.end():]).strip()
     matches, ambiguous = search_products(conn, rest)
     if not matches:
         # try dropping filler verbs
@@ -72,9 +107,37 @@ def _parse_item_segment(conn, segment):
         if cleaned != rest:
             matches, ambiguous = search_products(conn, cleaned)
             rest = cleaned
+    if len(matches) > 1:
+        # Separator-free speech puts several products in one segment
+        # ('সাবান এক কেজি চিনি'): the item THIS segment is about is the
+        # one whose name occurs first in the text — the rest is the tail.
+        # A tie at the same position (বিস্কুট's two packs share one alias)
+        # keeps the search order and the ambiguity flag.
+        def _occ(p):
+            best = None
+            names = [p["name_bn"], p["name_en"]] + [
+                a.strip() for a in p["aliases"].split(",") if a.strip()
+            ]
+            for n in names:
+                i = rest.find(n)
+                if i >= 0 and (best is None or i < best):
+                    best = i
+            return best
+
+        occs = [(_occ(p), p, s) for p, s in matches]
+        with_occ = [o for o in occs if o[0] is not None]
+        if with_occ:
+            first = min(o[0] for o in with_occ)
+            leaders = [o for o in with_occ if o[0] == first]
+            if len(leaders) == 1:
+                lead = leaders[0]
+                matches = [(lead[1], lead[2])] + [
+                    (p, s) for (o, p, s) in occs if p["id"] != lead[1]["id"]
+                ]
+                ambiguous = False
     info = {"qty": qty, "stated_price": stated_price}
     if not matches:
-        return None, None, rest, info
+        return None, None, rest, info, ""
     if qty is None:
         qty = 1.0
     # A stated price picks the variant whose price it is:
@@ -92,7 +155,7 @@ def _parse_item_segment(conn, segment):
                 "unit_price": product["price"],
                 "line_total": round(product["price"] * qty_units, 2),
             }
-            return item, None, rest, info
+            return item, None, rest, info, _tail_after_product(rest, product)
     product, _score = matches[0]
     if stated_price is not None and len(matches) == 1 and product["unit"] in ("kg", "litre"):
         # '৭৫ টাকার চিনি' = 75 taka WORTH of a weight-priced good.
@@ -120,11 +183,12 @@ def _parse_item_segment(conn, segment):
         # shopkeeper picks one of the options (resolve endpoint).
         item["ambiguous"] = True
         item["options"] = options
-    return item, amb, rest, info
+    return item, amb, rest, info, _tail_after_product(rest, product)
 
 
 _FILLER = re.compile(
-    r"(বিল|করো|করুন|দাও|দিন|দেন|নাও|চাই|রাখো|ইউপিআইতে|ইউপিআই|টাকার|দামের|টা|টে|টি)"
+    r"(বিল|করো|করুন|দাও|দিন|দেন|নাও|চাই|রাখো|ইউপিআইতে|ইউপিআই|টাকার|টাকা|দামের"
+    r"|টা(?=$|[\s,।])|টে(?=$|[\s,।])|টি(?=$|[\s,।]))"
 )
 
 
@@ -152,6 +216,10 @@ def parse_command(conn, text):
         draft["customer"] = {"id": customer["id"], "name": customer["name"]}
     else:
         new_name = extract_new_customer_name(conn, text)
+        if not new_name and "জমা" in t:
+            # 'জয় সরকার ২০০ টাকা জমা দিলেন' — payer named at the start,
+            # with no কে/নামে marker for the other extractor to anchor on.
+            new_name = extract_payer_name(conn, text)
         if new_name:
             # not in the customer book yet: carried on the draft, and the
             # ledger creates the customer when the draft is confirmed.
@@ -165,17 +233,20 @@ def parse_command(conn, text):
             draft["amount"] = phrases[0][0]
             return draft
 
-    # due query: 'সুমিতার কত বাকি'
-    if "কত বাকি" in t or "বাকি কত" in t:
+    # due query: 'সুমিতার কত বাকি', 'রহিমের কত টাকা বাকি' — the words need
+    # not be adjacent; টাকা often sits between them.
+    if "বাকি" in t and "কত" in t:
         draft["kind"] = "due_query"
         return draft
 
     # reports
-    if any(w in t for w in ("বিক্রি কেমন", "কত বিক্রি", "বিক্রি কত")):
+    if any(w in t for w in ("বিক্রি কেমন", "কত বিক্রি", "বিক্রি কত")) or (
+        "বিক্রি" in t and "কত" in t
+    ):
         draft["kind"] = "report"
         draft["report"] = "week_compare" if "সপ্তাহ" in t else "sales_summary"
         return draft
-    if "শেষ হয়ে" in t or "কম আছে" in t or "স্টক" in t:
+    if "শেষ হয়ে" in t or "কম আছে" in t or "স্টক" in t or ("মাল" in t and "শেষ" in t):
         draft["kind"] = "report"
         draft["report"] = "low_stock"
         return draft
@@ -203,20 +274,9 @@ def parse_command(conn, text):
         item_source = item_source.replace(draft["customer_name"], " ")
     items = []
     unknown_items = []
-    for seg in _split_items(item_source):
-        # strip customer mentions + payment words wherever they appear
-        # ('রহিমদার নামে দুই কেজি চিনি' and '...চিনি, রহিমদার নামে' alike)
-        s = seg
-        for n in sorted(cust_names, key=len, reverse=True):
-            s = s.replace(n, " ")
-        s = re.sub(r"(নামে|বাকিতে|বাকি|নগদে|নগদ|ইউপিআইতে|ইউপিআই)", " ", s)
-        # honorific residue after name stripping: 'রহিমদার' -> 'দার'
-        s = re.sub(r"(^|\s)(দার|দা)(\s|$)", " ", s)
-        if len(s.strip()) < 2:
-            # residue like 'র' from 'রহিমদার' is not an item segment;
-            # a 1-letter query would substring-match half the catalog.
-            continue
-        item, amb, rest, info = _parse_item_segment(conn, s.strip())
+
+    def consume(seg_text, depth=0):
+        item, amb, rest, info, tail = _parse_item_segment(conn, seg_text)
         if amb:
             draft["ambiguities"].append(amb)
         if item:
@@ -233,6 +293,31 @@ def parse_command(conn, text):
                         "stated_price": info.get("stated_price"),
                     }
                 )
+            return
+        # No separator spoken ('এক কেজি চিনি দুইটা সাবান'): the next item
+        # hides in the tail after the matched product's name. Only follow
+        # it when the tail carries its own quantity — trailing words like
+        # a brand name ('সরিষার তেল ফরচুন') are not another item.
+        if tail and depth < 3 and (
+            find_number_phrases(tail)
+            or re.search(r"(\S+?)(টে|টা|টি|খানা)(?=$|[\s,।])", tail)
+        ):
+            consume(tail, depth + 1)
+
+    for seg in _split_items(item_source):
+        # strip customer mentions + payment words wherever they appear
+        # ('রহিমদার নামে দুই কেজি চিনি' and '...চিনি, রহিমদার নামে' alike)
+        s = seg
+        for n in sorted(cust_names, key=len, reverse=True):
+            s = s.replace(n, " ")
+        s = re.sub(r"(নামে|বাকিতে|বাকি|নগদে|নগদ|ইউপিআইতে|ইউপিআই)", " ", s)
+        # honorific residue after name stripping: 'রহিমদার' -> 'দার'
+        s = re.sub(r"(^|\s)(দার|দা)(\s|$)", " ", s)
+        if len(s.strip()) < 2:
+            # residue like 'র' from 'রহিমদার' is not an item segment;
+            # a 1-letter query would substring-match half the catalog.
+            continue
+        consume(s.strip())
     draft["items"] = items
     if unknown_items:
         draft["unknown_items"] = unknown_items

@@ -3,3 +3,7 @@ uvicorn
 openai
 pydantic
 python-multipart
+python-dotenv
+# dev/test (not needed to run the app)
+pytest
+httpx

@@ -120,3 +120,60 @@ def test_fuzzy_customer_from_dictation_spelling():
     d = parse_command(conn, "দুইটা দুধ আর একটা ডিটারজেন্ট সুনিতার নামে বাকিতে")
     assert d["customer"]["name"] == "সুমিতা"
     assert d["payment_type"] == "due" and d["total"] == 159
+
+
+def test_english_units_are_safe():
+    # audit P0: '500 g sugar' used to parse as 500 KG (₹30,000)
+    conn = make()
+    d = parse_command(conn, "500 g sugar")
+    assert d["items"][0]["name_bn"] == "চিনি" and d["items"][0]["qty"] == 0.5
+    assert d["total"] == 30
+    d = parse_command(conn, "half kg sugar")
+    assert d["items"][0]["qty"] == 0.5 and d["total"] == 30
+    d = parse_command(conn, "2 dozen eggs")
+    assert d["items"][0]["qty"] == 24 and d["total"] == 168
+
+
+def test_natural_questions_are_queries_not_sales():
+    # audit P1: these used to become sales with mangled unknown items
+    conn = make()
+    d = parse_command(conn, "রহিমের কত টাকা বাকি")
+    assert d["kind"] == "due_query" and d["customer"]["name"] == "রহিম"
+    d = parse_command(conn, "আজ কত টাকা বিক্রি হয়েছে")
+    assert d["kind"] == "report" and d["report"] == "sales_summary"
+    d = parse_command(conn, "গত সপ্তাহে কত টাকা বিক্রি হয়েছে")
+    assert d["kind"] == "report" and d["report"] == "week_compare"
+    d = parse_command(conn, "কোন মাল শেষ")
+    assert d["kind"] == "report" and d["report"] == "low_stock"
+
+
+def test_separator_free_items_all_found():
+    # spoken batch 1 #12 / batch 2 #1-3: no commas, no আর between items
+    conn = make()
+    d = parse_command(conn, "এক কেজি চিনি দুইটা সাবান")
+    assert d["total"] == 130 and len(d["items"]) == 2
+    d = parse_command(conn, "দুইটা সাবান এক কেজি চিনি")
+    assert d["total"] == 130 and len(d["items"]) == 2
+    d = parse_command(conn, "এক কেজি চিনি দুইটা সাবান আধা কেজি মসুর ডাল")
+    assert d["total"] == 190 and len(d["items"]) == 3
+
+
+def test_compound_number_quantities():
+    conn = make()
+    d = parse_command(conn, "দুইশ পঞ্চাশ গ্রাম চিনি")
+    assert d["items"][0]["qty"] == 0.25 and d["total"] == 15
+    d = parse_command(conn, "সাড়ে পাঁচশ টাকা জমা দিলেন রহিমদা")
+    assert d["kind"] == "due_payment" and d["amount"] == 550
+    d = parse_command(conn, "দেড় হাজার টাকা জমা দিলেন রহিমদা")
+    assert d["kind"] == "due_payment" and d["amount"] == 1500
+
+
+def test_new_customer_name_cleanup():
+    conn = make()
+    # genitive must not stick to the name (audit P1-4)
+    d = parse_command(conn, "জয় সরকারের নামে দুই কেজি চিনি বাকিতে")
+    assert d["customer_name"] == "জয় সরকার"
+    # payer named at sentence start, no কে/নামে marker
+    d = parse_command(conn, "জয় সরকার ২০০ টাকা জমা দিলেন")
+    assert d["kind"] == "due_payment" and d["amount"] == 200
+    assert d["customer_name"] == "জয় সরকার"
