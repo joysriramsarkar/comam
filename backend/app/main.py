@@ -149,9 +149,17 @@ def confirm_draft(draft_id: int):
     if draft["kind"] == "sale":
         if draft.get("ambiguities"):
             raise HTTPException(400, "resolve ambiguities first")
+        if draft.get("unknown_items"):
+            names = ", ".join(u["text"] for u in draft["unknown_items"])
+            raise HTTPException(
+                400, f"ক্যাটালগে নেই এমন পণ্য আছে: {names} — আগে ঠিক করুন"
+            )
+        customer_id = (draft.get("customer") or {}).get("id")
+        if customer_id is None and draft.get("customer_name"):
+            customer_id = led.get_or_create_customer(draft["customer_name"])["id"]
         sale = led.create_sale(
             [{"product_id": i["product_id"], "qty": i["qty"]} for i in draft["items"]],
-            customer_id=(draft.get("customer") or {}).get("id"),
+            customer_id=customer_id,
             payment_type=draft.get("payment_type", "cash"),
         )
         result = {"sale": sale}
@@ -160,7 +168,12 @@ def confirm_draft(draft_id: int):
             led.record_purchase(i["product_id"], i["qty"])
         result = {"purchased": draft["items"]}
     elif draft["kind"] == "due_payment":
-        due = led.record_due_payment(draft["customer"]["id"], draft["amount"])
+        customer_id = (draft.get("customer") or {}).get("id")
+        if customer_id is None and draft.get("customer_name"):
+            customer_id = led.get_or_create_customer(draft["customer_name"])["id"]
+        if customer_id is None:
+            raise HTTPException(400, "customer required for due payment")
+        due = led.record_due_payment(customer_id, draft["amount"])
         result = {"remaining_due": due}
     elif draft["kind"] == "undo":
         voided = led.void_last_sale()
@@ -291,6 +304,9 @@ def edit_draft_items(draft_id: int, body: ItemsIn):
     if draft["kind"] not in ("sale", "purchase"):
         raise HTTPException(400, "only sale/purchase drafts have items")
     draft["items"] = _rebuild_items(body.items)
+    # editing the item list means the shopkeeper has reviewed the draft:
+    # any catalog-unknown items they left out are settled by that edit.
+    draft.pop("unknown_items", None)
     draft["total"] = round(sum(i["line_total"] for i in draft["items"]), 2)
     _store_draft(draft_id, draft)
     return {"draft": draft, "summary_bn": draft_summary_bn(draft)}

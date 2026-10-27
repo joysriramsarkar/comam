@@ -27,7 +27,8 @@ for case in cases:
     if "report" in case:
         ok = ok and d.get("report") == case["report"]
     if "customer" in case:
-        ok = ok and (d.get("customer") or {}).get("name") == case["customer"]
+        got_name = (d.get("customer") or {}).get("name") or d.get("customer_name")
+        ok = ok and got_name == case["customer"]
     if "payment_type" in case:
         ok = ok and d.get("payment_type") == case["payment_type"]
     if "amount" in case:

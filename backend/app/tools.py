@@ -54,13 +54,25 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "set_payment_type",
-            "description": "Set whether the bill is cash (নগদ) or due/credit (বাকি).",
+            "description": "Set how the bill is paid: cash (নগদ), due/credit (বাকি), or UPI (ইউপিআই).",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "payment_type": {"type": "string", "enum": ["cash", "due"]}
+                    "payment_type": {"type": "string", "enum": ["cash", "due", "upi"]}
                 },
                 "required": ["payment_type"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_customer_name",
+            "description": "Name a customer who is NOT in the known-customer list. The customer is created when the draft is confirmed.",
+            "parameters": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"],
             },
         },
     },
@@ -134,6 +146,7 @@ class DraftSession:
         self.conn = conn
         self.items = []
         self.customer = None
+        self.customer_name = None
         self.payment_type = "cash"
         self.due_payment = None
         self.ambiguities = []
@@ -149,7 +162,7 @@ class DraftSession:
                 "engine": "spark",
             }
         total = round(sum(i["line_total"] for i in self.items), 2)
-        return {
+        draft = {
             "kind": "sale" if self.items else "unknown",
             "items": self.items,
             "customer": self.customer,
@@ -159,6 +172,10 @@ class DraftSession:
             "raw": raw,
             "engine": "spark",
         }
+        if self.customer_name and not self.customer:
+            draft["customer_name"] = self.customer_name
+            draft["customer"] = {"id": None, "name": self.customer_name}
+        return draft
 
 
 def dispatch(session: DraftSession, name: str, args: dict):
@@ -210,6 +227,9 @@ def dispatch(session: DraftSession, name: str, args: dict):
     if name == "set_payment_type":
         session.payment_type = args["payment_type"]
         return {"payment_type": session.payment_type}
+    if name == "set_customer_name":
+        session.customer_name = str(args["name"]).strip()
+        return {"customer_name": session.customer_name, "new_customer": True}
     if name == "record_due_payment":
         c = conn.execute(
             "SELECT * FROM customers WHERE id=?", (args["customer_id"],)
@@ -245,7 +265,13 @@ provided tools. Rules:
   e.g. 500 gram of a kg product is qty 0.5). If a search is ambiguous
   (ambiguous=true), do NOT pick one: report the options back instead.
 - If a customer name is mentioned and it matches a known customer, call
-  set_customer. If they say বাকি/নামে, set_payment_type due; নগদ means cash.
+  set_customer. If the name is NOT a known customer, call set_customer_name
+  with the name as spoken (do not drop it). If they say বাকি/নামে,
+  set_payment_type due; নগদ means cash; ইউপিআই/UPI means upi.
+- If search_product finds no match for an item, do NOT invent a price or
+  skip it silently: tell the shopkeeper that item is not in the catalog.
+- A price spoken before an item ('দশ টাকার বিস্কুট') states which priced
+  variant they mean, not a quantity.
 - For a due payment (জমা দিলেন), call record_due_payment.
 - For business questions, use the report tools and answer briefly in Bengali.
 - Never invent prices or totals: prices come from search_product results,

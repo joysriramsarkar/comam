@@ -62,6 +62,48 @@ def find_customer(conn, text):
     return None
 
 
+# Words that are never part of a person's name in a shop command.
+_NAME_STOP = {
+    "বিল", "করো", "করুন", "দাও", "দিন", "দেন", "নাও", "চাই", "বাকি", "বাকিতে",
+    "নগদ", "নগদে", "টাকা", "টাকার", "কেজি", "গ্রাম", "লিটার", "ডজন", "আর",
+    "এবং", "ও", "জমা", "দিলেন", "দিল", "কিনলাম", "কিনেছি", "এনেছি", "আনলাম",
+    "বিক্রি", "সেল", "ইউপিআই", "ইউপিআইতে",
+}
+
+
+def extract_new_customer_name(conn, text):
+    """Heuristic: a name-like phrase right before 'কে' or 'র নামে' that is
+    NOT a known customer, e.g. 'জয় সরকারকে তিনটা ডিম ...' -> 'জয় সরকার'.
+    Returns the cleaned name, or None. Conservative: 1-3 Bengali words,
+    no command/stop words, not a product name."""
+    t = normalize(text)
+    for pat in (r"([\u0980-\u09FF]+(?: [\u0980-\u09FF]+){0,2})কে(?: |$)",
+                r"([\u0980-\u09FF]+(?: [\u0980-\u09FF]+){0,2})র? নামে"):
+        m = re.search(pat, t)
+        if not m:
+            continue
+        words = m.group(1).split()
+        # drop any leading run of stop words the regex may have swallowed
+        while words and words[0] in _NAME_STOP:
+            words.pop(0)
+        if not words or any(w in _NAME_STOP for w in words):
+            continue
+        # strip honorifics: করিমদা -> করিম, জয়দার -> জয়
+        last = words[-1]
+        if last.endswith("দার") and len(last) > 3:
+            words[-1] = last[:-3]
+        elif last.endswith("দা") and len(last) > 3:
+            words[-1] = last[:-2]
+        name = " ".join(words).strip()
+        if not name:
+            continue
+        matches, _ = search_products(conn, name)
+        if matches and matches[0][1] >= 0.9:
+            continue  # that phrase is a product, not a person
+        return name
+    return None
+
+
 if __name__ == "__main__":
     conn = init_db(get_conn(":memory:"))
     m, amb = search_products(conn, "বিস্কুট")

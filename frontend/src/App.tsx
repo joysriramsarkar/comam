@@ -131,6 +131,12 @@ export default function App() {
             ))}
           </ul>
           <div className="sum">মোট {taka(editItems.reduce((a, i) => a + i.unit_price * i.qty, 0))}</div>
+          {!!resp.draft.unknown_items?.length && (
+            <p className="err">
+              ⚠ ক্যাটালগে নেই: {resp.draft.unknown_items.map((u) => u.text).join(", ")}
+              {" "}— এই পণ্য ক্যাটালগে না থাকায় বিলে ধরা হয়নি। পরিমাণ ঠিক করে সেভ করলে এই সতর্কতা উঠে যাবে, নাহলে বাতিল করুন।
+            </p>
+          )}
           <div className="row">
             <button className="primary" onClick={confirm} disabled={busy}>✓ ঠিক আছে, সেভ করুন</button>
             <button onClick={reject}>বাতিল</button>

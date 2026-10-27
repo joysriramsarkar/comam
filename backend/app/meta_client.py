@@ -11,7 +11,7 @@ from .tools import SYSTEM_PROMPT, TOOL_SCHEMAS, DraftSession, customers_brief, d
 
 BASE_URL = "https://api.meta.ai/v1"
 CHAT_MODEL = "muse-spark-1.3"          # Standard — runtime model
-TRANSCRIBE_MODEL = "muse-voice-transcribe"  # verify exact id on Day 1
+TRANSCRIBE_MODEL = "muse-voice-transcribe-1.0"  # exact id verified 27 Oct via GET /v1/models
 
 
 class MetaClient:
@@ -82,12 +82,60 @@ class MetaClient:
         return draft
 
     def transcribe(self, audio_bytes: bytes, filename="audio.webm"):
-        """Experimental: Bengali speech-to-text. Model id + audio format
-        support must be verified on Day 1 (see FIRST-STEPS.md)."""
-        client = self._get()
-        import io
+        """Bengali speech-to-text via POST /v1/asr/transcribe (verified
+        27 Oct 2026 against dev.meta.ai/docs/speech-to-text).
 
-        f = io.BytesIO(audio_bytes)
-        f.name = filename
-        resp = client.audio.transcriptions.create(model=TRANSCRIBE_MODEL, file=f)
-        return resp.text
+        The ASR endpoint is NOT the OpenAI audio API: it takes multipart
+        form data with a JSON "request" part and an "audio" part holding a
+        WAV file (mono, 16-bit PCM, 16 kHz or 24 kHz). Non-WAV input is
+        converted with ffmpeg when available. Do NOT send a languageBias
+        string field: the API rejects it as a malformed request; Bengali
+        is auto-detected correctly without it.
+        """
+        import subprocess
+        import tempfile
+        import urllib.request
+        from pathlib import Path
+
+        wav = audio_bytes
+        if not audio_bytes[:4] == b"RIFF":
+            with tempfile.TemporaryDirectory() as td:
+                src = Path(td) / ("in" + (Path(filename).suffix or ".webm"))
+                dst = Path(td) / "out.wav"
+                src.write_bytes(audio_bytes)
+                try:
+                    subprocess.run(
+                        [
+                            "ffmpeg", "-y", "-loglevel", "error", "-i", str(src),
+                            "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le",
+                            "-map_metadata", "-1", str(dst),
+                        ],
+                        check=True,
+                        capture_output=True,
+                        timeout=60,
+                    )
+                except (OSError, subprocess.SubprocessError) as exc:
+                    raise RuntimeError(
+                        "audio conversion to WAV failed (ffmpeg required)"
+                    ) from exc
+                wav = dst.read_bytes()
+        boundary = "----comamasrboundary3f8a1c9e"
+        request_json = json.dumps(
+            {"model": TRANSCRIBE_MODEL, "audioEncoding": "WAV"}
+        )
+        body = (
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"request\"\r\n"
+            f"Content-Type: application/json\r\n\r\n{request_json}\r\n"
+        ).encode("utf-8")
+        body += (
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"audio\"; "
+            f"filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\n"
+        ).encode("utf-8") + wav + f"\r\n--{boundary}--\r\n".encode("utf-8")
+        req = urllib.request.Request(
+            BASE_URL + "/asr/transcribe", data=body, method="POST"
+        )
+        req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+        req.add_header("Authorization", f"Bearer {self.api_key}")
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            out = json.loads(resp.read().decode("utf-8"))
+        return out["transcript"]

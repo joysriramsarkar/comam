@@ -17,7 +17,7 @@ A small shopkeeper runs the shop by *speaking Bengali*. Say —
 
 ## Core scope (frozen — this, and only this, gets built first)
 
-1. **Voice/text billing.** A spoken (or typed) multi-item bill becomes a cart draft: items matched against the catalog (Bengali names, spelling variants, Banglish), quantities and prices filled in, total read back — cash or due? The sale is saved, and stock updated, **only after the shopkeeper confirms**.
+1. **Voice/text billing.** A spoken (or typed) multi-item bill becomes a cart draft: items matched against the catalog (Bengali names, spelling variants, Banglish), quantities and prices filled in, total read back — cash, due, or UPI? A price spoken with an item ("দশ টাকার বিস্কুট") selects that priced variant. Items the catalog does not know are flagged, never silently dropped. The sale is saved, and stock updated, **only after the shopkeeper confirms**.
 2. **বাকি ও জমা (due ledger).** Sell on credit to a named customer, record a payment ("রহিমদা ২০০ টাকা জমা দিলেন"), and ask "সুমিতার কত বাকি?" — the answer comes from the ledger, not the model's memory.
 3. **Reports from whitelisted tools.** "গত সপ্তাহের চেয়ে এই সপ্তাহে বিক্রি কেমন?", "কোন মাল শেষ হয়ে আসছে?", "আজ কত বিক্রি হলো?" — answered with a chart plus a one-or-two-line Bengali summary.
 4. **Safety nets.** An ambiguous command gets a clarification question, never a guess ("২০ টাকার বড় প্যাকেটটা, না ১০ টাকার ছোটটা?"). "শেষ বিক্রিটা বাতিল করো" undoes the last sale, with an audit-log entry.
@@ -55,9 +55,11 @@ The split is the point: **AI understands language; code does the accounting.** E
 
 **26 Oct (Day 0):** backend complete (billing spine, due ledger, reports, draft→confirm, ambiguity resolution, editable drafts), frontend built, demo seed data in place. 20 automated tests pass.
 
-**Local-parser eval (offline baseline, `eval/commands.json`, 50 commands):**
-- Intent + customer accuracy: **50/50 (100%)**
-- Sale/purchase total accuracy: **38/38 (100%)** — totals always computed by code from DB prices
+**27 Oct (Day 1):** voice verified end-to-end — a real spoken Bengali bill (the founder's own voice note) transcribed cleanly by `muse-voice-transcribe-1.0` and parsed into a draft. That one real sentence exposed four parser gaps, all fixed the same morning: (1) items missing from the catalog (ম্যাগি) are now flagged with the price the shopkeeper stated, never silently dropped, and confirm is blocked until the draft is reviewed; (2) a spoken price picks the variant — "দশ টাকার বিস্কুট" is the ৳10 small pack ×1, not 10 big packs; (3) UPI (ইউপিআই) is a payment type alongside cash and due; (4) a new customer's name is captured and the customer is created on confirm. 24 automated tests pass.
+
+**Local-parser eval (offline baseline, `eval/commands.json`, 52 commands):**
+- Intent + customer accuracy: **52/52 (100%)**
+- Sale/purchase total accuracy: **40/40 (100%)** — totals always computed by code from DB prices
 - Ambiguity detection: flagged, never guessed (বিস্কুট → two pack sizes)
 
 The same command set will be run through the Muse Spark path and with recorded voices (~100 spoken commands) during the hackathon; results will be added here. Run it yourself: `python scripts/run_eval.py`.

@@ -11,7 +11,9 @@ export interface Draft {
   items?: DraftItem[];
   total?: number;
   payment_type?: string;
-  customer?: { id: number; name: string } | null;
+  customer?: { id: number | null; name: string } | null;
+  customer_name?: string;
+  unknown_items?: { text: string; qty?: number; stated_price?: number | null }[];
   amount?: number;
   ambiguities?: { text: string; options: { product_id: number; name_bn: string; price: number }[] }[];
   engine?: string;

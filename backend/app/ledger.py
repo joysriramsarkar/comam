@@ -15,6 +15,22 @@ class Ledger:
     def __init__(self, conn):
         self.conn = conn
 
+    # ---------- customers ----------
+    def get_or_create_customer(self, name):
+        row = self.conn.execute(
+            "SELECT * FROM customers WHERE name=?", (name,)
+        ).fetchone()
+        if row is not None:
+            return row
+        cur = self.conn.execute(
+            "INSERT INTO customers (name, aliases, phone) VALUES (?,?,?)",
+            (name, "", ""),
+        )
+        self.conn.commit()
+        return self.conn.execute(
+            "SELECT * FROM customers WHERE id=?", (cur.lastrowid,)
+        ).fetchone()
+
     # ---------- sales ----------
     def create_sale(self, items, customer_id=None, payment_type="cash"):
         """items: [{product_id, qty}]. Prices come from the DB.
