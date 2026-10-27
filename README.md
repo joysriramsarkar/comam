@@ -63,10 +63,14 @@ General phone agents can operate almost any app by looking at screenshots and ta
 
 **27 Oct (Day 1, hardening):** an external audit probed the app with hostile inputs; every confirmed finding was fixed the same day, with each probe kept as a regression test. Highlights: money guards now sit at the confirm step, so *both* engines are held to them — a due sale without a customer, an empty bill, selling more than the stock, and paying back more than the due are all refused with a Bengali explanation; resolving one ambiguity no longer clears the others; undo voids the sale that was last *when the command was spoken*. The parser also learned separator-free speech ("এক কেজি চিনি দুইটা সাবান" → both items), natural questions ("রহিমের কত টাকা বাকি"), English units ("500 g sugar" = 0.5 kg, not 500 kg), and compound numbers (দুইশ পঞ্চাশ, সাড়ে পাঁচশ, দেড় হাজার). 39 automated tests pass.
 
-**Local-parser eval (offline baseline, `eval/commands.json`, 68 commands):**
-- Intent + customer accuracy: **68/68 (100%)**
-- Sale/purchase total accuracy: **48/48 (100%)** — totals always computed by code from DB prices
-- Cart accuracy (exact items + quantities, where specified): **7/7 (100%)**
+**27 Oct (Day 1, evening):** the written eval grew to the full **100 commands** — and caught one more real bug on the way: "এক হাজার টাকার চাল" (₹1000-worth of rice) was read as 1 kg, because a fuzzy runner-up (চা পাতা) blocked the worth-pricing rule; a stated price now applies to the clear winner. Two more mitigations landed: unusually large quantities (>10 kg/litre, >100 pieces) raise an advisory ⚠ on the confirm read-back — the honest answer to ASR hearing পৌনে as পনেরো, since a real number is never remapped — and the 🎤 button now falls back to recording + server-side Meta ASR transcription in browsers without Web Speech, instead of giving up. 42 automated tests pass.
+
+**27 Oct (Day 1, late evening):** a second external review found two more money bugs — both reproduced live before fixing. Purchase drafts now face the same confirm guards as sales (an ambiguous "দুইটা বিস্কুট কিনলাম" previously stocked the *guessed* pack, silently) and are written in one transaction; voiding a due sale whose payment was already taken is refused inside the ledger itself, so an undo can never drive a customer's due negative; a draft confirm is claimed atomically, so even concurrent confirms commit exactly once. Sale lines now snapshot `unit_cost`, so a later purchase-price change cannot rewrite past profit, and the rolling report is labelled honestly — "শেষ ৭ দিনে" (last 7 days), not "this week". Dropping a catalog-unknown item now takes an explicit tick in the UI, not just an edit. MIT LICENSE added; dependencies pinned (Python 3.12). 51 automated tests pass.
+
+**Local-parser eval (offline baseline, `eval/commands.json`, 100 commands):**
+- Intent + customer accuracy: **100/100 (100%)**
+- Sale/purchase total accuracy: **74/74 (100%)** — totals always computed by code from DB prices
+- Cart accuracy (exact items + quantities, where specified): **10/10 (100%)**
 - Ambiguity detection: flagged, never guessed (বিস্কুট → two pack sizes)
 
 The same command set will be run through the Muse Spark path and with recorded voices (~100 spoken commands) during the hackathon; results will be added here. Run it yourself: `python scripts/run_eval.py`.

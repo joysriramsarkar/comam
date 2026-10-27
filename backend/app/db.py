@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS sale_items (
     product_id INTEGER NOT NULL REFERENCES products(id),
     qty REAL NOT NULL,
     unit_price REAL NOT NULL,
+    unit_cost REAL NOT NULL DEFAULT 0,   -- snapshot of products.cost at sale time
     line_total REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS due_payments (
@@ -100,6 +101,13 @@ def get_conn(db_path=None):
 
 def init_db(conn):
     conn.executescript(SCHEMA)
+    # Migration for DBs created before unit_cost existed (FIX-PLAN-2 E1):
+    # CREATE TABLE IF NOT EXISTS never alters an existing table.
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(sale_items)")]
+    if "unit_cost" not in cols:
+        conn.execute(
+            "ALTER TABLE sale_items ADD COLUMN unit_cost REAL NOT NULL DEFAULT 0"
+        )
     if conn.execute("SELECT COUNT(*) c FROM products").fetchone()["c"] == 0:
         conn.executemany(
             "INSERT INTO products (name_bn,name_en,aliases,unit,price,cost,stock,low_stock_threshold)"

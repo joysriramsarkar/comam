@@ -174,6 +174,24 @@ def extract_payer_name(conn, text):
     return name
 
 
+def quantity_warnings(items):
+    """Advisory flags for unusually large quantities — never blocking.
+
+    Spoken batch 2 showed ASR hearing পৌনে (1.75) as পনেরো (15): the
+    parser cannot safely remap a real number, so the mitigation is to
+    make a large quantity impossible to miss on the confirm read-back.
+    Thresholds sit above ordinary small-shop amounts (a 10 kg purchase
+    stays silent; 15 kg of আলু does not)."""
+    out = []
+    for i in items:
+        qty, unit = float(i.get("qty") or 0), i.get("unit")
+        if (unit in ("kg", "litre") and qty > 10) or (unit == "piece" and qty > 100):
+            out.append(
+                f"{i['name_bn']} {qty:g} {unit} — পরিমাণটা বড়, ঠিক আছে কিনা দেখে নিন"
+            )
+    return out
+
+
 if __name__ == "__main__":
     conn = init_db(get_conn(":memory:"))
     m, amb = search_products(conn, "বিস্কুট")

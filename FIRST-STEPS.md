@@ -14,8 +14,11 @@
 > scored 11/12 through Meta ASR. An external audit's confirmed findings
 > were fixed the same day (confirm-step money guards, per-ambiguity
 > resolve, separator-free parsing, English units, natural questions);
-> the suite is now 39 tests passing, local-parser eval 68/68 with
-> per-item cart checks. Remaining: spoken eval batches toward ~100,
+> the suite is now 42 tests passing, local-parser eval 100/100 with
+> per-item cart checks (grown from 68; the expansion caught a real
+> worth-pricing bug, "এক হাজার টাকার চাল"). Large-quantity drafts now
+> warn on the read-back, and the mic falls back to server transcription
+> where Web Speech is missing. Remaining: more spoken batches,
 > demo video, submission polish.
 
 ## Before app code (27 Oct morning)

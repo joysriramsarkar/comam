@@ -55,9 +55,11 @@ class Ledger:
         sale_id = cur.lastrowid
         for p, qty, line in rows:
             self.conn.execute(
-                "INSERT INTO sale_items (sale_id, product_id, qty, unit_price, line_total)"
-                " VALUES (?,?,?,?,?)",
-                (sale_id, p["id"], qty, p["price"], line),
+                "INSERT INTO sale_items (sale_id, product_id, qty, unit_price, unit_cost, line_total)"
+                " VALUES (?,?,?,?,?,?)",
+                # unit_cost is a snapshot: later purchase-price changes
+                # must not rewrite this sale's profit (FIX-PLAN-2 E1).
+                (sale_id, p["id"], qty, p["price"], p["cost"], line),
             )
             self.conn.execute(
                 "UPDATE products SET stock = stock - ? WHERE id=?", (qty, p["id"])
@@ -87,12 +89,32 @@ class Ledger:
 
     def void_sale(self, sale_id):
         """Void one specific confirmed sale and restore its stock.
-        Returns the sale dict, or None if it is not voidable."""
+        Returns the sale dict, or None if it is not voidable.
+        Raises ValueError when voiding a due sale whose payment has
+        already been taken would push the customer's due negative
+        (FIX-PLAN-2 D3) — the guard lives here so every undo path
+        (draft confirm, /api/undo-last-sale) is held to it."""
         s = self.conn.execute(
             "SELECT * FROM sales WHERE id=? AND status='confirmed'", (sale_id,)
         ).fetchone()
         if s is None:
             return None
+        if s["payment_type"] == "due" and s["customer_id"] is not None:
+            due_sales = self.conn.execute(
+                "SELECT COALESCE(SUM(total),0) t FROM sales"
+                " WHERE customer_id=? AND payment_type='due' AND status='confirmed'",
+                (s["customer_id"],),
+            ).fetchone()["t"]
+            paid = self.conn.execute(
+                "SELECT COALESCE(SUM(amount),0) t FROM due_payments WHERE customer_id=?",
+                (s["customer_id"],),
+            ).fetchone()["t"]
+            if paid > due_sales - s["total"] + 1e-9:
+                raise ValueError(
+                    "এই বিক্রির বিপরীতে টাকা জমা পড়ে গেছে — বাতিল করলে "
+                    "বাকির হিসাব ঋণাত্মক হয়ে যাবে। আগে জমাটা ফেরত বা "
+                    "সমন্বয় করুন।"
+                )
         for it in self.conn.execute(
             "SELECT * FROM sale_items WHERE sale_id=?", (s["id"],)
         ).fetchall():
@@ -142,16 +164,37 @@ class Ledger:
         return out
 
     # ---------- purchases / stock in ----------
-    def record_purchase(self, product_id, qty, cost_per_unit=None):
-        self.conn.execute(
-            "UPDATE products SET stock = stock + ? WHERE id=?", (float(qty), product_id)
-        )
-        if cost_per_unit is not None:
+    def record_purchases(self, items):
+        """Stock in a whole purchase in ONE transaction (FIX-PLAN-2 D2).
+        items: [{product_id, qty, cost_per_unit?}]. Every product is
+        validated before anything is written — one bad id means the
+        purchase writes nothing, never half of it."""
+        rows = []
+        for it in items:
+            p = self.conn.execute(
+                "SELECT id FROM products WHERE id=?", (it["product_id"],)
+            ).fetchone()
+            if p is None:
+                raise ValueError(f"unknown product {it['product_id']}")
+            rows.append(it)
+        for it in rows:
             self.conn.execute(
-                "UPDATE products SET cost=? WHERE id=?", (float(cost_per_unit), product_id)
+                "UPDATE products SET stock = stock + ? WHERE id=?",
+                (float(it["qty"]), it["product_id"]),
             )
-        self._audit("purchase", f"product {product_id} +{qty}")
+            if it.get("cost_per_unit") is not None:
+                self.conn.execute(
+                    "UPDATE products SET cost=? WHERE id=?",
+                    (float(it["cost_per_unit"]), it["product_id"]),
+                )
+            self._audit("purchase", f"product {it['product_id']} +{it['qty']}")
         self.conn.commit()
+
+    def record_purchase(self, product_id, qty, cost_per_unit=None):
+        item = {"product_id": product_id, "qty": qty}
+        if cost_per_unit is not None:
+            item["cost_per_unit"] = cost_per_unit
+        self.record_purchases([item])
 
     # ---------- reports ----------
     def sales_summary(self, days=1, calendar=False):
@@ -167,8 +210,10 @@ class Ledger:
             (since,),
         ).fetchone()
         profit = self.conn.execute(
-            "SELECT COALESCE(SUM(si.line_total - p.cost*si.qty),0) pr"
-            " FROM sale_items si JOIN products p ON p.id=si.product_id"
+            # unit_cost snapshot from sale time — NOT the product's
+            # current cost, which a newer purchase may have changed.
+            "SELECT COALESCE(SUM(si.line_total - si.unit_cost*si.qty),0) pr"
+            " FROM sale_items si"
             " JOIN sales s ON s.id=si.sale_id"
             " WHERE s.status='confirmed' AND s.created_at>=?",
             (since,),

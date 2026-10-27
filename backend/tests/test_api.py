@@ -68,13 +68,23 @@ def test_new_customer_upi_flow_and_unknown_block():
     # confirm is blocked while a catalog-unknown item is unresolved
     r2 = client.post(f"/api/drafts/{d['draft_id']}/confirm")
     assert r2.status_code == 400
-    # the shopkeeper reviews the item list (PUT) — that settles the warning
+    # a plain item edit does NOT settle the warning (FIX-PLAN-2 D5):
+    # dropping the unknown product must be an explicit acknowledgement
     items = [
         {"product_id": i["product_id"], "qty": i["qty"]}
         for i in d["draft"]["items"]
     ]
     r3 = client.put(f"/api/drafts/{d['draft_id']}/items", json={"items": items})
     assert r3.status_code == 200
+    assert r3.json()["draft"].get("unknown_items"), "edit alone must keep the warning"
+    assert client.post(f"/api/drafts/{d['draft_id']}/confirm").status_code == 400
+    # with the explicit acknowledgement the warning settles and the
+    # unknown item is dropped loudly — never billed (total stays 31)
+    r3b = client.put(
+        f"/api/drafts/{d['draft_id']}/items",
+        json={"items": items, "acknowledge_unknown": True},
+    )
+    assert not r3b.json()["draft"].get("unknown_items")
     r4 = client.post(f"/api/drafts/{d['draft_id']}/confirm")
     assert r4.status_code == 200
     sale = r4.json()["result"]["sale"]
@@ -141,3 +151,91 @@ def test_undo_voids_the_sale_from_draft_time():
     r = client.post(f"/api/drafts/{du['draft_id']}/confirm")
     assert r.status_code == 200
     assert r.json()["result"]["voided_sale"]["id"] == s1 != s2
+
+
+def test_ambiguous_purchase_confirm_blocked():
+    # FIX-PLAN-2 D1 (probe V1): the purchase branch must refuse an
+    # ambiguous draft exactly like the sale branch — never stock a guess.
+    def biscuit_stocks():
+        return {p["name_bn"]: p["stock"]
+                for p in client.get("/api/products").json()
+                if "বিস্কুট" in p["name_bn"]}
+
+    before = biscuit_stocks()
+    d = _cmd("দুইটা বিস্কুট কিনলাম")
+    assert d["kind"] == "purchase" and d["needs_clarification"] is True
+    assert client.post(f"/api/drafts/{d['draft_id']}/confirm").status_code == 400
+    assert biscuit_stocks() == before
+    # the refused confirm left the draft pending (claim reverted, D4):
+    # resolving the ambiguity lets the SAME draft confirm cleanly.
+    small = [o for o in d["draft"]["ambiguities"][0]["options"] if o["price"] == 10][0]
+    client.post(f"/api/drafts/{d['draft_id']}/resolve",
+                json={"product_id": small["product_id"]})
+    assert client.post(f"/api/drafts/{d['draft_id']}/confirm").status_code == 200
+    assert biscuit_stocks()["বিস্কুট ছোট প্যাকেট"] == before["বিস্কুট ছোট প্যাকেট"] + 2
+
+
+def test_double_confirm_moves_stock_once():
+    # FIX-PLAN-2 D4: a second confirm is refused and stock moves once.
+    d = _cmd("এক কেজি আলু নগদ")
+    before = [p for p in client.get("/api/products").json()
+              if p["name_en"] == "potato"][0]["stock"]
+    assert client.post(f"/api/drafts/{d['draft_id']}/confirm").status_code == 200
+    assert client.post(f"/api/drafts/{d['draft_id']}/confirm").status_code == 400
+    after = [p for p in client.get("/api/products").json()
+             if p["name_en"] == "potato"][0]["stock"]
+    assert after == before - 1
+
+
+def test_week_answer_says_last_7_days():
+    # FIX-PLAN-2 E2: rolling windows must be labelled as what they are.
+    r = client.post("/api/command",
+                    json={"text": "গত সপ্তাহের চেয়ে এই সপ্তাহে বিক্রি কেমন"})
+    assert r.json()["kind"] == "report"
+    assert "শেষ ৭ দিনে" in r.json()["answer_bn"]
+
+
+def test_concurrent_confirm_exactly_once():
+    # FIX-PLAN-2 D4 race probe: 4 simultaneous confirms of one draft —
+    # exactly one may succeed and the stock may move exactly once.
+    import threading
+
+    d = _cmd("এক কেজি পেঁয়াজ নগদ")
+    before = [p for p in client.get("/api/products").json()
+              if p["name_en"] == "onion"][0]["stock"]
+    results = []
+
+    def go():
+        results.append(
+            client.post(f"/api/drafts/{d['draft_id']}/confirm").status_code
+        )
+
+    ts = [threading.Thread(target=go) for _ in range(4)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert sorted(results) == [200, 400, 400, 400]
+    after = [p for p in client.get("/api/products").json()
+             if p["name_en"] == "onion"][0]["stock"]
+    assert after == before - 1
+
+
+def test_paid_void_refused_via_api():
+    # FIX-PLAN-2 D3 at the API layer, on a fresh DB (own customer
+    # history): both undo paths must refuse a paid due sale.
+    old = main_mod._conn
+    main_mod._conn = init_db(get_conn(":memory:"))
+    try:
+        d = _cmd("রহিমদার নামে দুই কেজি চিনি বাকিতে")
+        assert client.post(f"/api/drafts/{d['draft_id']}/confirm").status_code == 200
+        d = _cmd("রহিমদা ১২০ টাকা জমা দিলেন")
+        assert client.post(f"/api/drafts/{d['draft_id']}/confirm").status_code == 200
+        d = _cmd("শেষ বিক্রিটা বাতিল করো")
+        r = client.post(f"/api/drafts/{d['draft_id']}/confirm")
+        assert r.status_code == 400 and "জমা" in r.json()["detail"]
+        assert client.post("/api/undo-last-sale").status_code == 400
+        dues = client.get("/api/dues").json()
+        assert dues == []  # due is 0, never -120
+    finally:
+        main_mod._conn = old

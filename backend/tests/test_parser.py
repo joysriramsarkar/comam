@@ -193,3 +193,26 @@ def test_spoken_batch2_lessons():
     # clipped পনে for পৌনে
     d = parse_command(conn, "পনে দুই কেজি আলু")
     assert d["total"] == 52.5
+
+
+def test_large_quantity_warns_but_stays_advisory():
+    # ASR hears পৌনে (1.75 kg) as পনেরো (15 kg) for some speakers; the
+    # number cannot be remapped, so a large qty must shout on read-back.
+    conn = make()
+    d = parse_command(conn, "পনেরো কেজি আলু")
+    assert d["total"] == 450
+    assert d.get("warnings") and "আলু" in d["warnings"][0]
+    # ordinary amounts stay silent
+    d = parse_command(conn, "দুই কেজি চিনি")
+    assert "warnings" not in d
+    d = parse_command(conn, "দশ কেজি আলু এনেছি")
+    assert "warnings" not in d
+
+
+def test_stated_price_worth_despite_fuzzy_extras():
+    # 'চাল' fuzzy-matches 'চা পাতা' too, so search returns extras with a
+    # clear winner — the worth reading must still win over qty=1.
+    conn = make()
+    d = parse_command(conn, "এক হাজার টাকার চাল")
+    assert d["total"] == 1000
+    assert abs(d["items"][0]["qty"] - 1000 / 55) < 0.01

@@ -1,9 +1,9 @@
-fastapi
-uvicorn
-openai
-pydantic
-python-multipart
-python-dotenv
+fastapi==0.162.0
+uvicorn==0.54.0
+openai==3.39.0
+pydantic==2.14.1
+python-multipart==0.0.32
+python-dotenv==1.2.4
 # dev/test (not needed to run the app)
-pytest
-httpx
+pytest==9.1.1
+httpx==0.28.1

@@ -12,6 +12,7 @@ from .catalog import (
     extract_payer_name,
     find_customer,
     normalize,
+    quantity_warnings,
     search_products,
 )
 
@@ -186,8 +187,11 @@ def _parse_item_segment(conn, segment):
             }
             return item, None, rest, info, _tail_after_product(rest, product)
     product, _score = matches[0]
-    if stated_price is not None and len(matches) == 1 and product["unit"] in ("kg", "litre"):
+    if stated_price is not None and not ambiguous and product["unit"] in ("kg", "litre"):
         # '৭৫ টাকার চিনি' = 75 taka WORTH of a weight-priced good.
+        # `not ambiguous`, not len(matches)==1: a clear-winner search can
+        # still return fuzzy extras ('চাল' also fuzzy-matches 'চা পাতা'),
+        # and 'এক হাজার টাকার চাল' must be worth-priced on the winner.
         qty_units = round(stated_price / product["price"], 3)
         line_total = round(stated_price, 2)
     else:
@@ -350,6 +354,9 @@ def parse_command(conn, text):
     draft["items"] = items
     if unknown_items:
         draft["unknown_items"] = unknown_items
+    warns = quantity_warnings(items)
+    if warns:
+        draft["warnings"] = warns
     draft["total"] = round(sum(i["line_total"] for i in items), 2)
     if not items and not unknown_items:
         draft["kind"] = "unknown"
@@ -379,6 +386,8 @@ def draft_summary_bn(draft):
         if draft.get("unknown_items"):
             names = ", ".join(u["text"] for u in draft["unknown_items"])
             out += f" । ⚠ ক্যাটালগে নেই: {names}"
+        if draft.get("warnings"):
+            out += " । ⚠ " + "; ".join(draft["warnings"])
         return out
     if kind == "due_payment":
         name = (draft.get("customer") or {}).get("name") or draft.get("customer_name", "")

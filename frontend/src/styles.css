@@ -26,6 +26,8 @@ table { width: 100%; border-collapse: collapse; background: var(--card); border-
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eef1ee; font-size: 15px; }
 .low { color: #b91c1c; font-weight: 700; }
 .err { color: #b91c1c; }
+.warnote { color: var(--warn); font-weight: 600; }
+.ackrow { display: flex; gap: 8px; align-items: center; font-weight: 600; margin: 6px 0; }
 .bars { display: flex; align-items: flex-end; gap: 10px; height: 90px; margin-top: 8px; }
 .bar { flex: 1; background: var(--green); border-radius: 6px 6px 0 0; min-height: 4px; position: relative; }
 .bar small { position: absolute; top: -18px; left: 0; right: 0; text-align: center; color: var(--mut); }

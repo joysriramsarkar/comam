@@ -6,6 +6,7 @@ POST /api/drafts/{id}/confirm — the shopkeeper always confirms first.
 Reports and due-queries are read-only and answered immediately.
 """
 import json
+import threading
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -32,6 +33,11 @@ except ImportError:
 app = FastAPI(title="comam AI")
 meta = MetaClient()
 _conn = None
+# One shared SQLite connection => draft mutations (confirm / reject /
+# resolve / items) are serialised per process. Together with the
+# claim-first status update in confirm, a draft can never be
+# confirmed twice, even by two concurrent requests (FIX-PLAN-2 D4).
+_draft_lock = threading.Lock()
 
 
 def conn():
@@ -65,9 +71,11 @@ def _report_answer(report, led: Ledger):
                 f"({fmt_num(s['sales_count'])}টা বিল), আনুমানিক লাভ {fmt_taka(s['est_profit'])}।"), s
     if report == "week_compare":
         w = led.week_compare()
-        base = (f"এই সপ্তাহে বিক্রি {fmt_taka(w['this_week'])}, গত সপ্তাহে {fmt_taka(w['last_week'])}।")
+        # Honest label (FIX-PLAN-2 E2): this is a rolling last-7-days
+        # vs the 7 days before, not a calendar week — say so.
+        base = (f"শেষ ৭ দিনে বিক্রি {fmt_taka(w['this_week'])}, তার আগের ৭ দিনে {fmt_taka(w['last_week'])}।")
         if w["change_pct"] is not None:
-            base += f" আগের সপ্তাহের চেয়ে {fmt_num(abs(w['change_pct']))}% {'বেশি' if w['change_pct'] >= 0 else 'কম'}।"
+            base += f" আগের ৭ দিনের চেয়ে {fmt_num(abs(w['change_pct']))}% {'বেশি' if w['change_pct'] >= 0 else 'কম'}।"
         return base, w
     if report == "low_stock":
         items = led.low_stock()
@@ -158,6 +166,11 @@ def command(body: CommandIn):
 
 @app.post("/api/drafts/{draft_id}/confirm")
 def confirm_draft(draft_id: int):
+    with _draft_lock:
+        return _confirm_draft_locked(draft_id)
+
+
+def _confirm_draft_locked(draft_id: int):
     row = conn().execute("SELECT * FROM drafts WHERE id=?", (draft_id,)).fetchone()
     if row is None:
         raise HTTPException(404, "draft not found")
@@ -166,84 +179,126 @@ def confirm_draft(draft_id: int):
     draft = json.loads(row["payload"])
     led = ledger()
     result = {}
-    if draft["kind"] == "sale":
-        if draft.get("ambiguities"):
-            raise HTTPException(400, "resolve ambiguities first")
-        if draft.get("unknown_items"):
-            names = ", ".join(u["text"] for u in draft["unknown_items"])
-            raise HTTPException(
-                400, f"ক্যাটালগে নেই এমন পণ্য আছে: {names} — আগে ঠিক করুন"
-            )
-        # Money guards — they live here, at confirm, so BOTH engines
-        # (local parser and Spark tool-calling) are held to them.
-        if not draft.get("items"):
-            raise HTTPException(400, "কোনো পণ্য নেই — খালি বিল সেভ হবে না")
-        for i in draft["items"]:
-            if float(i["qty"]) <= 0:
-                raise HTTPException(400, "পরিমাণ শূন্যের বেশি হতে হবে")
-        customer_id = (draft.get("customer") or {}).get("id")
-        if customer_id is None and draft.get("customer_name"):
-            customer_id = led.get_or_create_customer(draft["customer_name"])["id"]
-        if draft.get("payment_type", "cash") == "due" and customer_id is None:
-            raise HTTPException(
-                400, "বাকি বিক্রির জন্য ক্রেতা দরকার — কার নামে বাকি রাখব?"
-            )
-        for i in draft["items"]:
-            p = conn().execute(
-                "SELECT stock, name_bn, unit FROM products WHERE id=?",
-                (i["product_id"],),
-            ).fetchone()
-            if p is not None and float(i["qty"]) > float(p["stock"]):
-                raise HTTPException(
-                    400,
-                    f"স্টকে {p['name_bn']} আছে {fmt_num(p['stock'])} {p['unit']}"
-                    " — এর বেশি বিক্রি হবে না",
-                )
-        sale = led.create_sale(
-            [{"product_id": i["product_id"], "qty": i["qty"]} for i in draft["items"]],
-            customer_id=customer_id,
-            payment_type=draft.get("payment_type", "cash"),
-        )
-        result = {"sale": sale}
-    elif draft["kind"] == "purchase":
-        if not draft.get("items"):
-            raise HTTPException(400, "কোনো পণ্য নেই — খালি ক্রয় সেভ হবে না")
-        for i in draft["items"]:
-            if float(i["qty"]) <= 0:
-                raise HTTPException(400, "পরিমাণ শূন্যের বেশি হতে হবে")
-            led.record_purchase(i["product_id"], i["qty"])
-        result = {"purchased": draft["items"]}
-    elif draft["kind"] == "due_payment":
-        customer_id = (draft.get("customer") or {}).get("id")
-        if customer_id is None and draft.get("customer_name"):
-            customer_id = led.get_or_create_customer(draft["customer_name"])["id"]
-        if customer_id is None:
-            raise HTTPException(400, "customer required for due payment")
-        amount = float(draft.get("amount") or 0)
-        if amount <= 0:
-            raise HTTPException(400, "জমার পরিমাণ শূন্যের বেশি হতে হবে")
-        due_now = led.customer_due(customer_id)
-        if amount > due_now:
-            raise HTTPException(
-                400, f"বাকি আছে মাত্র {fmt_taka(due_now)} — এর বেশি জমা নেওয়া যাবে না"
-            )
-        due = led.record_due_payment(customer_id, amount)
-        result = {"remaining_due": due}
-    elif draft["kind"] == "undo":
-        target = draft.get("target_sale_id")
-        voided = led.void_sale(target) if target else led.void_last_sale()
-        if voided is None:
-            raise HTTPException(400, "nothing to undo")
-        result = {"voided_sale": voided}
-    else:
-        raise HTTPException(400, f"cannot confirm kind {draft['kind']}")
-    conn().execute("UPDATE drafts SET status='confirmed' WHERE id=?", (draft_id,))
+    # Claim the draft BEFORE any ledger effect (FIX-PLAN-2 D4): the
+    # conditional UPDATE only succeeds for the first confirmer. If a
+    # later guard or effect fails, the claim is reverted so the draft
+    # stays pending and usable.
+    cur = conn().execute(
+        "UPDATE drafts SET status='confirmed' WHERE id=? AND status='pending'",
+        (draft_id,),
+    )
+    if cur.rowcount == 0:
+        raise HTTPException(400, "draft already handled")
     conn().commit()
-    return {"ok": True, "result": result}
+    try:
+        if draft["kind"] == "sale":
+            if draft.get("ambiguities"):
+                raise HTTPException(400, "resolve ambiguities first")
+            if draft.get("unknown_items"):
+                names = ", ".join(u["text"] for u in draft["unknown_items"])
+                raise HTTPException(
+                    400, f"ক্যাটালগে নেই এমন পণ্য আছে: {names} — আগে ঠিক করুন"
+                )
+            # Money guards — they live here, at confirm, so BOTH engines
+            # (local parser and Spark tool-calling) are held to them.
+            if not draft.get("items"):
+                raise HTTPException(400, "কোনো পণ্য নেই — খালি বিল সেভ হবে না")
+            for i in draft["items"]:
+                if float(i["qty"]) <= 0:
+                    raise HTTPException(400, "পরিমাণ শূন্যের বেশি হতে হবে")
+            customer_id = (draft.get("customer") or {}).get("id")
+            if customer_id is None and draft.get("customer_name"):
+                customer_id = led.get_or_create_customer(draft["customer_name"])["id"]
+            if draft.get("payment_type", "cash") == "due" and customer_id is None:
+                raise HTTPException(
+                    400, "বাকি বিক্রির জন্য ক্রেতা দরকার — কার নামে বাকি রাখব?"
+                )
+            for i in draft["items"]:
+                p = conn().execute(
+                    "SELECT stock, name_bn, unit FROM products WHERE id=?",
+                    (i["product_id"],),
+                ).fetchone()
+                if p is not None and float(i["qty"]) > float(p["stock"]):
+                    raise HTTPException(
+                        400,
+                        f"স্টকে {p['name_bn']} আছে {fmt_num(p['stock'])} {p['unit']}"
+                        " — এর বেশি বিক্রি হবে না",
+                    )
+            sale = led.create_sale(
+                [{"product_id": i["product_id"], "qty": i["qty"]} for i in draft["items"]],
+                customer_id=customer_id,
+                payment_type=draft.get("payment_type", "cash"),
+            )
+            result = {"sale": sale}
+        elif draft["kind"] == "purchase":
+            # Same guards as a sale (FIX-PLAN-2 D1): a purchase the parser
+            # flagged as ambiguous or unknown must never stock a guessed item.
+            if draft.get("ambiguities"):
+                raise HTTPException(400, "resolve ambiguities first")
+            if draft.get("unknown_items"):
+                names = ", ".join(u["text"] for u in draft["unknown_items"])
+                raise HTTPException(
+                    400, f"ক্যাটালগে নেই এমন পণ্য আছে: {names} — আগে ঠিক করুন"
+                )
+            if not draft.get("items"):
+                raise HTTPException(400, "কোনো পণ্য নেই — খালি ক্রয় সেভ হবে না")
+            for i in draft["items"]:
+                if float(i["qty"]) <= 0:
+                    raise HTTPException(400, "পরিমাণ শূন্যের বেশি হতে হবে")
+            # One transaction for the whole purchase (FIX-PLAN-2 D2): a bad
+            # product id anywhere means nothing is stocked, not half of it.
+            try:
+                led.record_purchases(
+                    [{"product_id": i["product_id"], "qty": i["qty"]} for i in draft["items"]]
+                )
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+            result = {"purchased": draft["items"]}
+        elif draft["kind"] == "due_payment":
+            customer_id = (draft.get("customer") or {}).get("id")
+            if customer_id is None and draft.get("customer_name"):
+                customer_id = led.get_or_create_customer(draft["customer_name"])["id"]
+            if customer_id is None:
+                raise HTTPException(400, "customer required for due payment")
+            amount = float(draft.get("amount") or 0)
+            if amount <= 0:
+                raise HTTPException(400, "জমার পরিমাণ শূন্যের বেশি হতে হবে")
+            due_now = led.customer_due(customer_id)
+            if amount > due_now:
+                raise HTTPException(
+                    400, f"বাকি আছে মাত্র {fmt_taka(due_now)} — এর বেশি জমা নেওয়া যাবে না"
+                )
+            due = led.record_due_payment(customer_id, amount)
+            result = {"remaining_due": due}
+        elif draft["kind"] == "undo":
+            target = draft.get("target_sale_id")
+            try:
+                voided = led.void_sale(target) if target else led.void_last_sale()
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+            if voided is None:
+                raise HTTPException(400, "nothing to undo")
+            result = {"voided_sale": voided}
+        else:
+            raise HTTPException(400, f"cannot confirm kind {draft['kind']}")
+        conn().commit()
+        return {"ok": True, "result": result}
+    except Exception:
+        conn().execute(
+            "UPDATE drafts SET status='pending' WHERE id=? AND status='confirmed'",
+            (draft_id,),
+        )
+        conn().commit()
+        raise
 
 
 @app.post("/api/drafts/{draft_id}/reject")
 def reject_draft(draft_id: int):
+    with _draft_lock:
+        return _reject_draft_locked(draft_id)
+
+
+def _reject_draft_locked(draft_id: int):
     row = conn().execute(
         "SELECT status FROM drafts WHERE id=?", (draft_id,)
     ).fetchone()
@@ -251,7 +306,12 @@ def reject_draft(draft_id: int):
         raise HTTPException(404, "draft not found")
     if row["status"] != "pending":
         raise HTTPException(400, "draft already handled")
-    conn().execute("UPDATE drafts SET status='rejected' WHERE id=?", (draft_id,))
+    cur = conn().execute(
+        "UPDATE drafts SET status='rejected' WHERE id=? AND status='pending'",
+        (draft_id,),
+    )
+    if cur.rowcount == 0:
+        raise HTTPException(400, "draft already handled")
     conn().commit()
     return {"ok": True}
 
@@ -278,7 +338,10 @@ def report_low_stock():
 
 @app.post("/api/undo-last-sale")
 def undo_last_sale():
-    voided = ledger().void_last_sale()
+    try:
+        voided = ledger().void_last_sale()
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     if voided is None:
         raise HTTPException(400, "nothing to undo")
     return {"voided": voided}
@@ -291,6 +354,9 @@ class ResolveIn(BaseModel):
 
 class ItemsIn(BaseModel):
     items: list[dict]
+    # Dropping catalog-unknown items must be an explicit act, not a
+    # side effect of any edit (FIX-PLAN-2 D5).
+    acknowledge_unknown: bool = False
 
 
 def _load_draft(draft_id: int):
@@ -378,9 +444,12 @@ def edit_draft_items(draft_id: int, body: ItemsIn):
     if draft["kind"] not in ("sale", "purchase"):
         raise HTTPException(400, "only sale/purchase drafts have items")
     draft["items"] = _rebuild_items(body.items)
-    # editing the item list means the shopkeeper has reviewed the draft:
-    # any catalog-unknown items they left out are settled by that edit.
-    draft.pop("unknown_items", None)
+    # Catalog-unknown items are settled ONLY by an explicit
+    # acknowledgement (FIX-PLAN-2 D5): a plain edit leaves the list —
+    # and the confirm block — in place, so the ⚠ can never be
+    # clicked past by accident.
+    if body.acknowledge_unknown:
+        draft.pop("unknown_items", None)
     draft["total"] = round(sum(i["line_total"] for i in draft["items"]), 2)
     _store_draft(draft_id, draft)
     return {"draft": draft, "summary_bn": draft_summary_bn(draft)}

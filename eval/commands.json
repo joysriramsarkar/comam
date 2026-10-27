@@ -414,5 +414,204 @@
     "qty": 24
    }
   ]
+ },
+ {
+  "text": "সাড়ে চার কেজি চাল",
+  "kind": "sale",
+  "total": 247.5
+ },
+ {
+  "text": "আড়াই কেজি পেঁয়াজ",
+  "kind": "sale",
+  "total": 87.5
+ },
+ {
+  "text": "পৌনে তিন কেজি টমেটো",
+  "kind": "sale",
+  "total": 110
+ },
+ {
+  "text": "৭৫০ গ্রাম আটা",
+  "kind": "sale",
+  "total": 33.75
+ },
+ {
+  "text": "তিন ডজন ডিম",
+  "kind": "sale",
+  "total": 252,
+  "items": [
+   {
+    "name_bn": "ডিম",
+    "qty": 36
+   }
+  ]
+ },
+ {
+  "text": "আধা ডজন ডিম",
+  "kind": "sale",
+  "total": 42
+ },
+ {
+  "text": "পাঁচশো টাকার আলু",
+  "kind": "sale",
+  "total": 500
+ },
+ {
+  "text": "দুইশো পঞ্চাশ টাকার চিনি",
+  "kind": "sale",
+  "total": 250
+ },
+ {
+  "text": "এক হাজার টাকার চাল",
+  "kind": "sale",
+  "total": 1000
+ },
+ {
+  "text": "সাড়ে পাঁচশ টাকার সরিষার তেল",
+  "kind": "sale",
+  "total": 550
+ },
+ {
+  "text": "দেড় হাজার টাকার মসুর ডাল",
+  "kind": "sale",
+  "total": 1500
+ },
+ {
+  "text": "রহিমদা এক হাজার টাকা জমা দিলেন",
+  "kind": "due_payment",
+  "amount": 1000,
+  "customer": "রহিম"
+ },
+ {
+  "text": "সুমিতা পাঁচশো পঞ্চাশ টাকা জমা দিলো",
+  "kind": "due_payment",
+  "amount": 550,
+  "customer": "সুমিতা"
+ },
+ {
+  "text": "করিমের নামে আধা কেজি চিনি আর দুইটা সাবান বাকিতে",
+  "kind": "sale",
+  "total": 100,
+  "customer": "করিম",
+  "payment_type": "due"
+ },
+ {
+  "text": "দুই কেজি আটা আর এক কেজি লবণ নগদে",
+  "kind": "sale",
+  "total": 115,
+  "payment_type": "cash"
+ },
+ {
+  "text": "তিনটে ডিটারজেন্ট ইউপিআইতে",
+  "kind": "sale",
+  "total": 297,
+  "payment_type": "upi"
+ },
+ {
+  "text": "এক কেজি চিনি দুইটা সাবান তিনটে ডিম",
+  "kind": "sale",
+  "total": 151,
+  "items": [
+   {
+    "name_bn": "চিনি",
+    "qty": 1
+   },
+   {
+    "name_bn": "সাবান",
+    "qty": 2
+   },
+   {
+    "name_bn": "ডিম",
+    "qty": 3
+   }
+  ]
+ },
+ {
+  "text": "পাঁচ কেজি চাল আর দুই কেজি মসুর ডাল কিনলাম",
+  "kind": "purchase",
+  "total": 515
+ },
+ {
+  "text": "দশটা বিস্কুট ছোট প্যাকেট",
+  "kind": "sale",
+  "total": 100
+ },
+ {
+  "text": "দুইটা বিস্কুট বড় প্যাকেট আর তিনটা বিস্কুট ছোট প্যাকেট",
+  "kind": "sale",
+  "total": 70
+ },
+ {
+  "text": "আজকের বিক্রি কত",
+  "kind": "report",
+  "report": "sales_summary"
+ },
+ {
+  "text": "করিমের কত টাকা বাকি আছে",
+  "kind": "due_query",
+  "customer": "করিম"
+ },
+ {
+  "text": "রহিমের কত টাকা বাকি আছে",
+  "kind": "due_query",
+  "customer": "রহিম"
+ },
+ {
+  "text": "2 kg rice",
+  "kind": "sale",
+  "total": 110
+ },
+ {
+  "text": "half litre oil",
+  "kind": "sale",
+  "total": 90
+ },
+ {
+  "text": "সুমিতার নামে দুইটা দুধ বাকিতে",
+  "kind": "sale",
+  "total": 60,
+  "customer": "সুমিতা",
+  "payment_type": "due"
+ },
+ {
+  "text": "করিমদা তিনশো টাকা জমা দিলেন নগদে",
+  "kind": "due_payment",
+  "amount": 300,
+  "customer": "করিম"
+ },
+ {
+  "text": "একশো পঞ্চাশ টাকার তেল",
+  "kind": "sale",
+  "total": 150
+ },
+ {
+  "text": "দুটা সাবান",
+  "kind": "sale",
+  "total": 70
+ },
+ {
+  "text": "পনে দুই কেজি আলু",
+  "kind": "sale",
+  "total": 52.5
+ },
+ {
+  "text": "২৫০ গ্রাম মসুর ডাল",
+  "kind": "sale",
+  "total": 30
+ },
+ {
+  "text": "এক কেজি পেঁয়াজ আর আধা কেজি টমেটো",
+  "kind": "sale",
+  "total": 55,
+  "items": [
+   {
+    "name_bn": "পেঁয়াজ",
+    "qty": 1
+   },
+   {
+    "name_bn": "টমেটো",
+    "qty": 0.5
+   }
+  ]
  }
 ]

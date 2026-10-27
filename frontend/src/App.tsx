@@ -14,8 +14,12 @@ export default function App() {
   const [error, setError] = useState("");
   const [listening, setListening] = useState(false);
   const recogRef = useRef<unknown>(null);
+  const [recording, setRecording] = useState(false);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
   const [daily, setDaily] = useState<{ date: string; count: number; total: number }[]>([]);
   const [editItems, setEditItems] = useState<DraftItem[]>([]);
+  const [unknownAck, setUnknownAck] = useState(false);
 
   const refresh = useCallback(async () => {
     const [p, c, s, d] = await Promise.all([api.products(), api.customers(), api.summary(1), api.daily(7)]);
@@ -24,6 +28,7 @@ export default function App() {
 
   useEffect(() => {
     if (resp?.draft?.items) setEditItems(resp.draft.items.map((i) => ({ ...i })));
+    setUnknownAck(false);
   }, [resp?.draft_id, resp?.draft]);
 
   useEffect(() => { refresh().catch(() => setError("সার্ভারে সংযোগ যাচ্ছে না")); }, [refresh]);
@@ -46,7 +51,7 @@ export default function App() {
       // Only sale/purchase drafts have editable items — due payments and
       // undos confirm directly (the items endpoint rejects other kinds).
       if (resp.kind === "sale" || resp.kind === "purchase") {
-        await api.updateItems(resp.draft_id, editItems.map((i) => ({ product_id: i.product_id, qty: i.qty })));
+        await api.updateItems(resp.draft_id, editItems.map((i) => ({ product_id: i.product_id, qty: i.qty })), unknownAck);
       }
       await api.confirm(resp.draft_id);
       setResp(null); setText(""); await refresh();
@@ -77,18 +82,45 @@ export default function App() {
     setResp(null);
   };
 
-  const mic = () => {
+  const mic = async () => {
+    // A server-transcribe recording is in progress: this click stops it.
+    if (recorderRef.current) { recorderRef.current.stop(); return; }
     const SR = (window as unknown as { webkitSpeechRecognition?: unknown; SpeechRecognition?: unknown });
     const Ctor = (SR.SpeechRecognition || SR.webkitSpeechRecognition) as
       (new () => { lang: string; onresult: (e: { results: { [k: number]: { [k: number]: { transcript: string } } } }) => void; onend: () => void; start: () => void }) | undefined;
-    if (!Ctor) { setError("এই ব্রাউজারে voice recognition নেই — টাইপ করে বলুন, অথবা সার্ভারের transcribe ব্যবহার হবে"); return; }
-    const rec = new Ctor();
-    rec.lang = "bn-BD";
-    rec.onresult = (e) => setText(e.results[0][0].transcript);
-    rec.onend = () => setListening(false);
-    recogRef.current = rec;
-    setListening(true);
-    rec.start();
+    if (Ctor) {
+      const rec = new Ctor();
+      rec.lang = "bn-BD";
+      rec.onresult = (e) => setText(e.results[0][0].transcript);
+      rec.onend = () => setListening(false);
+      recogRef.current = rec;
+      setListening(true);
+      rec.start();
+      return;
+    }
+    // No Web Speech in this browser (e.g. Firefox): record the audio and
+    // let the server transcribe it with Meta ASR instead of giving up.
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const rec = new MediaRecorder(stream);
+      chunksRef.current = [];
+      rec.ondataavailable = (e) => { if (e.data.size) chunksRef.current.push(e.data); };
+      rec.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        recorderRef.current = null;
+        setRecording(false);
+        try {
+          const r = await api.transcribe(new Blob(chunksRef.current, { type: rec.mimeType || "audio/webm" }));
+          if (r.text) setText(r.text);
+        } catch (e) { setError(String(e)); }
+      };
+      recorderRef.current = rec;
+      setError("");
+      setRecording(true);
+      rec.start();
+    } catch {
+      setError("মাইক্রোফোন পাওয়া যাচ্ছে না — টাইপ করে বলুন");
+    }
   };
 
   const lowCount = products.filter((p) => p.stock <= p.low_stock_threshold).length;
@@ -114,7 +146,7 @@ export default function App() {
           placeholder="যেমন: দুই কেজি চিনি, তিনটে সাবান, রহিমদার নামে বাকিতে"
         />
         <div className="row">
-          <button className="mic" onClick={mic} disabled={listening}>{listening ? "শুনছি…" : "🎤 বলুন"}</button>
+          <button className="mic" onClick={mic} disabled={listening}>{listening ? "শুনছি…" : recording ? "⏺ রেকর্ড হচ্ছে — থামাতে চাপুন" : "🎤 বলুন"}</button>
           <button className="primary" onClick={send} disabled={busy || !text.trim()}>পাঠান</button>
         </div>
         {error && <p className="err">{error}</p>}
@@ -141,13 +173,22 @@ export default function App() {
           </ul>
           <div className="sum">মোট {taka(editItems.reduce((a, i) => a + i.unit_price * i.qty, 0))}</div>
           {!!resp.draft.unknown_items?.length && (
-            <p className="err">
-              ⚠ ক্যাটালগে নেই: {resp.draft.unknown_items.map((u) => u.text).join(", ")}
-              {" "}— এই পণ্য ক্যাটালগে না থাকায় বিলে ধরা হয়নি। পরিমাণ ঠিক করে সেভ করলে এই সতর্কতা উঠে যাবে, নাহলে বাতিল করুন।
-            </p>
+            <>
+              <p className="err">
+                ⚠ ক্যাটালগে নেই: {resp.draft.unknown_items.map((u) => u.text).join(", ")}
+                {" "}— এই পণ্য ক্যাটালগে না থাকায় বিলে ধরা হয়নি।
+              </p>
+              <label className="ackrow">
+                <input type="checkbox" checked={unknownAck} onChange={(e) => setUnknownAck(e.target.checked)} />
+                ক্যাটালগে নেই এমন পণ্য বাদ দিয়েই সেভ করুন
+              </label>
+            </>
+          )}
+          {!!resp.draft.warnings?.length && (
+            <p className="warnote">⚠ {resp.draft.warnings.join("; ")}</p>
           )}
           <div className="row">
-            <button className="primary" onClick={confirm} disabled={busy}>✓ ঠিক আছে, সেভ করুন</button>
+            <button className="primary" onClick={confirm} disabled={busy || (!!resp.draft.unknown_items?.length && !unknownAck)}>✓ ঠিক আছে, সেভ করুন</button>
             <button onClick={reject}>বাতিল</button>
           </div>
         </div>

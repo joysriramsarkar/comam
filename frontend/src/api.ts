@@ -14,6 +14,7 @@ export interface Draft {
   customer?: { id: number | null; name: string } | null;
   customer_name?: string;
   unknown_items?: { text: string; qty?: number; stated_price?: number | null }[];
+  warnings?: string[];
   amount?: number;
   ambiguities?: { text: string; options: { product_id: number; name_bn: string; price: number }[] }[];
   engine?: string;
@@ -52,14 +53,19 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ product_id: productId, ambiguity_index: ambiguityIndex }),
     }).then(j),
-  updateItems: (id: number, items: { product_id: number; qty: number }[]) =>
+  updateItems: (id: number, items: { product_id: number; qty: number }[], acknowledgeUnknown = false) =>
     fetch(`/api/drafts/${id}/items`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items }),
+      body: JSON.stringify({ items, acknowledge_unknown: acknowledgeUnknown }),
     }).then(j),
   daily: (days = 7): Promise<{ date: string; count: number; total: number }[]> =>
     fetch(`/api/reports/daily?days=${days}`).then(j),
+  transcribe: (blob: Blob): Promise<{ text: string }> => {
+    const fd = new FormData();
+    fd.append("file", blob, "audio.webm");
+    return fetch("/api/transcribe", { method: "POST", body: fd }).then(j);
+  },
 };
 
 export const bnNum = (v: number | string): string =>

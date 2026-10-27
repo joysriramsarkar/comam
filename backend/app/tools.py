@@ -7,7 +7,7 @@ after the shopkeeper confirms. There is deliberately no generic
 """
 import json
 
-from .catalog import search_products
+from .catalog import quantity_warnings, search_products
 from .ledger import Ledger
 
 TOOL_SCHEMAS = [
@@ -181,6 +181,10 @@ class DraftSession:
             # Same shape as the local parser: confirm stays blocked until
             # the shopkeeper reviews the draft, so nothing is dropped.
             draft["unknown_items"] = self.unknown_items
+        warns = quantity_warnings(self.items)
+        if warns:
+            # Advisory only (ASR পৌনে→পনেরো mitigation), same as parser.
+            draft["warnings"] = warns
         if self.customer_name and not self.customer:
             draft["customer_name"] = self.customer_name
             draft["customer"] = {"id": None, "name": self.customer_name}
