@@ -95,7 +95,9 @@ def _report_answer(report, led: Ledger):
 @app.get("/api/products")
 def products():
     rows = conn().execute("SELECT * FROM products ORDER BY name_bn").fetchall()
-    return [dict(r) for r in rows]
+    # The purchase cost is the shop's margin secret (Batch G6): the
+    # frontend never displays it, so it does not leave the server.
+    return [{k: v for k, v in dict(r).items() if k != "cost"} for r in rows]
 
 
 @app.get("/api/customers")
@@ -206,6 +208,11 @@ def _confirm_draft_locked(draft_id: int):
             for i in draft["items"]:
                 if float(i["qty"]) <= 0:
                     raise HTTPException(400, "পরিমাণ শূন্যের বেশি হতে হবে")
+            # An out-of-vocabulary payment type (Batch G3) must never be
+            # stored: the due ledger only counts "due", so a sale saved
+            # as e.g. "credit" would vanish from every total.
+            if draft.get("payment_type", "cash") not in ("cash", "due", "upi"):
+                raise HTTPException(400, "অজানা পেমেন্ট ধরন — নগদ, বাকি বা ইউপিআই হতে হবে")
             customer_id = (draft.get("customer") or {}).get("id")
             if customer_id is None and draft.get("customer_name"):
                 customer_id = led.get_or_create_customer(draft["customer_name"])["id"]
@@ -213,22 +220,31 @@ def _confirm_draft_locked(draft_id: int):
                 raise HTTPException(
                     400, "বাকি বিক্রির জন্য ক্রেতা দরকার — কার নামে বাকি রাখব?"
                 )
+            # Stock is checked against the AGGREGATED quantity per
+            # product (Batch G1): the same product on two lines used to
+            # pass line-by-line and drive the stock negative.
+            wanted = {}
             for i in draft["items"]:
+                wanted[i["product_id"]] = wanted.get(i["product_id"], 0.0) + float(i["qty"])
+            for pid, qty in wanted.items():
                 p = conn().execute(
                     "SELECT stock, name_bn, unit FROM products WHERE id=?",
-                    (i["product_id"],),
+                    (pid,),
                 ).fetchone()
-                if p is not None and float(i["qty"]) > float(p["stock"]):
+                if p is not None and qty > float(p["stock"]):
                     raise HTTPException(
                         400,
                         f"স্টকে {p['name_bn']} আছে {fmt_num(p['stock'])} {p['unit']}"
                         " — এর বেশি বিক্রি হবে না",
                     )
-            sale = led.create_sale(
-                [{"product_id": i["product_id"], "qty": i["qty"]} for i in draft["items"]],
-                customer_id=customer_id,
-                payment_type=draft.get("payment_type", "cash"),
-            )
+            try:
+                sale = led.create_sale(
+                    [{"product_id": i["product_id"], "qty": i["qty"]} for i in draft["items"]],
+                    customer_id=customer_id,
+                    payment_type=draft.get("payment_type", "cash"),
+                )
+            except ValueError as e:
+                raise HTTPException(400, str(e))
             result = {"sale": sale}
         elif draft["kind"] == "purchase":
             # Same guards as a sale (FIX-PLAN-2 D1): a purchase the parser
@@ -318,6 +334,11 @@ def _reject_draft_locked(draft_id: int):
 
 @app.get("/api/reports/summary")
 def report_summary(days: int = 1):
+    # One meaning of "আজ" everywhere (Batch G7): days=1 is the calendar
+    # day, exactly like the voice answer — a rolling 24h window used to
+    # make the dashboard card disagree with the spoken answer.
+    if days == 1:
+        return ledger().sales_summary(1, calendar=True)
     return ledger().sales_summary(days)
 
 
@@ -336,24 +357,20 @@ def report_low_stock():
     return ledger().low_stock()
 
 
-@app.post("/api/undo-last-sale")
-def undo_last_sale():
-    try:
-        voided = ledger().void_last_sale()
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    if voided is None:
-        raise HTTPException(400, "nothing to undo")
-    return {"voided": voided}
-
-
 class ResolveIn(BaseModel):
     product_id: int
     ambiguity_index: int | None = None
 
 
+class ItemIn(BaseModel):
+    product_id: int
+    qty: float
+
+
 class ItemsIn(BaseModel):
-    items: list[dict]
+    # Typed items (Batch G5): a missing qty or a non-numeric qty is a
+    # 422 from Pydantic, not a 500 from a KeyError deep in the rebuild.
+    items: list[ItemIn]
     # Dropping catalog-unknown items must be an explicit act, not a
     # side effect of any edit (FIX-PLAN-2 D5).
     acknowledge_unknown: bool = False
@@ -415,14 +432,22 @@ def resolve_draft(draft_id: int, body: ResolveIn):
     amb_items = [it for it in draft.get("items", []) if it.get("ambiguous")]
     if idx >= len(amb_items):
         raise HTTPException(400, "ambiguous item not found")
-    # Match the item by its option set when possible — with the Spark
-    # engine, search order and cart order need not be the same.
+    # Which cart item does this ambiguity belong to? Prefer the item at
+    # the same position — when two lines are ambiguous with IDENTICAL
+    # option sets (two biscuit lines), an option-set match alone always
+    # picks the first line and silently rewrites the wrong item
+    # (Batch G8). Fall back to the option-set match for the Spark
+    # engine, where search order and cart order need not agree.
     want = {o["product_id"] for o in ambs[idx].get("options", [])}
-    same_options = [
-        it for it in amb_items
-        if {o["product_id"] for o in it.get("options", [])} == want
-    ]
-    target = same_options[0] if same_options else amb_items[idx]
+    positional = amb_items[idx]
+    if {o["product_id"] for o in positional.get("options", [])} == want:
+        target = positional
+    else:
+        same_options = [
+            it for it in amb_items
+            if {o["product_id"] for o in it.get("options", [])} == want
+        ]
+        target = same_options[0] if same_options else positional
     if body.product_id not in [o["product_id"] for o in target.get("options", [])]:
         raise HTTPException(400, "choice is not one of the offered options")
     rebuilt = _rebuild_items([{"product_id": body.product_id, "qty": target["qty"]}])
@@ -443,7 +468,7 @@ def edit_draft_items(draft_id: int, body: ItemsIn):
     draft = _load_draft(draft_id)
     if draft["kind"] not in ("sale", "purchase"):
         raise HTTPException(400, "only sale/purchase drafts have items")
-    draft["items"] = _rebuild_items(body.items)
+    draft["items"] = _rebuild_items([i.model_dump() for i in body.items])
     # Catalog-unknown items are settled ONLY by an explicit
     # acknowledgement (FIX-PLAN-2 D5): a plain edit leaves the list —
     # and the confirm block — in place, so the ⚠ can never be

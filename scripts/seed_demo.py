@@ -34,11 +34,21 @@ for days_ago in range(14, 0, -1):
     when = datetime.now() - timedelta(days=days_ago)
     for _ in range(random.randint(3, 6)):
         chosen = random.sample(products, random.randint(1, 3))
-        items = [
-            {"product_id": p["id"], "qty": random.choice([0.5, 1, 2, 3]) if p["unit"] == "kg"
-             else random.choice([1, 2, 4])}
-            for p in chosen
-        ]
+        items = []
+        for p in chosen:
+            qty = random.choice([0.5, 1, 2, 3]) if p["unit"] == "kg" \
+                else random.choice([1, 2, 4])
+            # The ledger refuses overselling (Batch G1), so the demo
+            # generator caps each line at the stock actually on hand
+            # and drops items that have run out.
+            stock = conn.execute(
+                "SELECT stock FROM products WHERE id=?", (p["id"],)
+            ).fetchone()["stock"]
+            qty = min(qty, stock)
+            if qty > 0:
+                items.append({"product_id": p["id"], "qty": qty})
+        if not items:
+            continue
         due = random.random() < 0.3
         sale = led.create_sale(
             items,

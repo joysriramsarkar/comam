@@ -234,8 +234,88 @@ def test_paid_void_refused_via_api():
         d = _cmd("শেষ বিক্রিটা বাতিল করো")
         r = client.post(f"/api/drafts/{d['draft_id']}/confirm")
         assert r.status_code == 400 and "জমা" in r.json()["detail"]
-        assert client.post("/api/undo-last-sale").status_code == 400
+        # Batch G4: there is no direct undo endpoint any more — undo
+        # only ever happens through a confirmed draft. (405, not 404:
+        # the static-frontend mount answers unknown POST paths.)
+        assert client.post("/api/undo-last-sale").status_code in (404, 405)
         dues = client.get("/api/dues").json()
         assert dues == []  # due is 0, never -120
     finally:
         main_mod._conn = old
+
+
+# ---------- Batch G regressions ----------
+
+def _product(name_en):
+    return [p for p in client.get("/api/products").json()
+            if p["name_en"] == name_en][0]
+
+
+def test_duplicate_lines_cannot_oversell():
+    # G1 probe: the same product on two lines, each within stock, used
+    # to confirm and drive the stock negative — the check must be on
+    # the aggregated quantity.
+    sugar = _product("sugar")
+    stock = sugar["stock"]
+    d = _cmd("এক কেজি চিনি নগদ")
+    r = client.put(
+        f"/api/drafts/{d['draft_id']}/items",
+        json={"items": [
+            {"product_id": sugar["id"], "qty": stock},
+            {"product_id": sugar["id"], "qty": stock},
+        ]},
+    )
+    assert r.status_code == 200
+    r = client.post(f"/api/drafts/{d['draft_id']}/confirm")
+    assert r.status_code == 400
+    assert _product("sugar")["stock"] == stock  # nothing was sold
+
+
+def test_put_items_bad_input_is_422_not_500():
+    sugar = _product("sugar")
+    d = _cmd("এক কেজি চিনি নগদ")
+    r = client.put(f"/api/drafts/{d['draft_id']}/items",
+                   json={"items": [{"product_id": sugar["id"]}]})
+    assert r.status_code == 422
+    r = client.put(f"/api/drafts/{d['draft_id']}/items",
+                   json={"items": [{"product_id": sugar["id"], "qty": "abc"}]})
+    assert r.status_code == 422
+
+
+def test_products_do_not_leak_cost():
+    for p in client.get("/api/products").json():
+        assert "cost" not in p
+
+
+def test_confirm_rejects_unknown_payment_type():
+    # G3 backstop: even a hand-crafted draft (or a misbehaving model)
+    # cannot store a sale with a payment type the ledger ignores.
+    sugar = _product("sugar")
+    draft_id = main_mod._save_draft({
+        "kind": "sale",
+        "items": [{"product_id": sugar["id"], "name_bn": "চিনি", "qty": 1,
+                   "unit": "kg", "unit_price": 60, "line_total": 60}],
+        "customer": None, "payment_type": "credit", "total": 60,
+        "ambiguities": [],
+    })
+    r = client.post(f"/api/drafts/{draft_id}/confirm")
+    assert r.status_code == 400
+    assert _product("sugar")["stock"] == sugar["stock"]
+
+
+def test_summary_today_means_calendar_day():
+    # G7: a sale from yesterday 23:59 must not appear in "আজ" — the
+    # dashboard card now agrees with the voice answer.
+    from datetime import date, timedelta
+
+    before = client.get("/api/reports/summary?days=1").json()
+    yesterday = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d 23:59:59")
+    main_mod._conn.execute(
+        "INSERT INTO sales (created_at, customer_id, payment_type, total, status)"
+        " VALUES (?, NULL, 'cash', 777, 'confirmed')",
+        (yesterday,),
+    )
+    main_mod._conn.commit()
+    after = client.get("/api/reports/summary?days=1").json()
+    assert after["sales_total"] == before["sales_total"]
+    assert after["sales_count"] == before["sales_count"]

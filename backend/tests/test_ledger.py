@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.db import get_conn, init_db       # noqa: E402
 from app.ledger import Ledger            # noqa: E402
@@ -125,3 +127,42 @@ def test_unit_cost_migration_on_old_db():
     init_db(raw)
     cols = [r["name"] for r in raw.execute("PRAGMA table_info(sale_items)")]
     assert "unit_cost" in cols
+
+
+# ---------- Batch G1: the ledger guards itself ----------
+
+def test_ledger_rejects_duplicate_line_oversell():
+    conn, led = make()
+    chini = conn.execute("SELECT * FROM products WHERE name_en='sugar'").fetchone()
+    stock = chini["stock"]
+    half = stock / 2 + 1  # each line within stock, the total is not
+    with pytest.raises(ValueError):
+        led.create_sale([
+            {"product_id": chini["id"], "qty": half},
+            {"product_id": chini["id"], "qty": half},
+        ])
+    after = conn.execute("SELECT stock FROM products WHERE id=?",
+                         (chini["id"],)).fetchone()
+    assert after["stock"] == stock  # refused sale wrote nothing
+
+
+def test_ledger_rejects_bad_sales():
+    conn, led = make()
+    chini = conn.execute("SELECT * FROM products WHERE name_en='sugar'").fetchone()
+    with pytest.raises(ValueError):
+        led.create_sale([{"product_id": chini["id"], "qty": -2}])
+    with pytest.raises(ValueError):
+        led.create_sale([{"product_id": chini["id"], "qty": 1}],
+                        payment_type="credit")
+    with pytest.raises(ValueError):
+        led.create_sale([{"product_id": chini["id"], "qty": 1}],
+                        payment_type="due")  # no customer
+    with pytest.raises(ValueError):
+        led.create_sale([])
+
+
+def test_ledger_rejects_nonpositive_purchase():
+    conn, led = make()
+    chini = conn.execute("SELECT * FROM products WHERE name_en='sugar'").fetchone()
+    with pytest.raises(ValueError):
+        led.record_purchases([{"product_id": chini["id"], "qty": 0}])

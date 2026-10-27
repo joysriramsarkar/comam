@@ -34,9 +34,23 @@ class Ledger:
     # ---------- sales ----------
     def create_sale(self, items, customer_id=None, payment_type="cash"):
         """items: [{product_id, qty}]. Prices come from the DB.
-        Returns the sale dict with computed totals."""
+        Returns the sale dict with computed totals.
+
+        The ledger guards itself (Batch G1): callers — API, seed, future
+        integrations — cannot create a sale with qty <= 0, more than the
+        stock (counted across duplicate lines for the same product), a
+        due sale with no customer, or an unknown payment type. All checks
+        run before any write, so a refused sale writes nothing."""
+        if payment_type not in ("cash", "due", "upi"):
+            raise ValueError(f"unknown payment_type {payment_type!r}")
+        if payment_type == "due" and customer_id is None:
+            raise ValueError("বাকি বিক্রির জন্য ক্রেতা দরকার")
+        if not items:
+            raise ValueError("কোনো পণ্য নেই — খালি বিল সেভ হবে না")
         rows = []
         total = 0.0
+        wanted = {}
+        products = {}
         for it in items:
             p = self.conn.execute(
                 "SELECT * FROM products WHERE id=?", (it["product_id"],)
@@ -44,9 +58,20 @@ class Ledger:
             if p is None:
                 raise ValueError(f"unknown product {it['product_id']}")
             qty = float(it["qty"])
+            if qty <= 0:
+                raise ValueError("পরিমাণ শূন্যের বেশি হতে হবে")
+            wanted[p["id"]] = wanted.get(p["id"], 0.0) + qty
+            products[p["id"]] = p
             line = round(p["price"] * qty, 2)
             total += line
             rows.append((p, qty, line))
+        for pid, qty in wanted.items():
+            p = products[pid]
+            if qty > float(p["stock"]):
+                raise ValueError(
+                    f"স্টকে {p['name_bn']} আছে {p['stock']} {p['unit']}"
+                    " — এর বেশি বিক্রি হবে না"
+                )
         total = round(total, 2)
         cur = self.conn.execute(
             "INSERT INTO sales (created_at, customer_id, payment_type, total) VALUES (?,?,?,?)",
@@ -176,6 +201,8 @@ class Ledger:
             ).fetchone()
             if p is None:
                 raise ValueError(f"unknown product {it['product_id']}")
+            if float(it["qty"]) <= 0:
+                raise ValueError("পরিমাণ শূন্যের বেশি হতে হবে")
             rows.append(it)
         for it in rows:
             self.conn.execute(
