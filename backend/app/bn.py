@@ -163,7 +163,8 @@ def parse_number_at(tokens, i):
                     return base + unit / 2, j
             return base + 0.5, j
         return None, i
-    if tok == "পৌনে":
+    if tok in ("পৌনে", "পনে"):
+        # পনে is the clipped spoken form of পৌনে (ASR writes it so, too)
         base, j = _base_number(tokens, i + 1)
         if base is not None:
             return base - 0.25, j

@@ -30,9 +30,13 @@ def _extract_stated_price(segment):
         after = segment[e:]
         stripped = after.lstrip()
         lead = len(after) - len(stripped)
-        for token in ("টাকা দামের", "টাকার"):
+        for token in ("টাকা দামের", "টাকার", "টাকা"):
             if stripped.startswith(token):
                 cut = e + lead + len(token)
+                if token == "টাকা" and not segment[cut:].strip():
+                    # '…২০০ টাকা' at the END of a segment is a stated
+                    # total, not a per-item price — leave it alone.
+                    continue
                 return v, (segment[:s] + " " + segment[cut:]).strip()
     return None, segment
 
@@ -67,17 +71,42 @@ def _parse_item_segment(conn, segment):
     # Whichever quantity signal starts first owns this segment.
     # NOTE: no \b here — Bengali vowel signs are combining marks, so
     # Python's \b fails after them. Use an explicit lookahead instead.
-    pm = re.search(r"(\S+?)(টে|টা|টি|খানা)(?=$|[\s,।])", segment)
+    pm = re.search(r"(\S+?)(টে|টা|টি|টো|খানা)(?=$|[\s,।])", segment)
     pm_val = None
     if pm:
-        pm_val, _ = parse_number_at([pm.group(1)], 0)
+        # clipped stem: 'দুটা'/'দুটো' is দুইটা with the ই dropped in speech
+        pm_val = {"দু": 2.0}.get(pm.group(1))
+        if pm_val is None:
+            pm_val, _ = parse_number_at([pm.group(1)], 0)
         if pm_val is None:
             pm = None
     qty = None
     qty_span = None
-    if phrases and (pm is None or phrases[0][1] <= pm.start()):
+    # A phrase starting IMMEDIATELY after the piece token is the speaker
+    # correcting themselves within the same item ('দুটি দুই ডজন ডিম') —
+    # the later, fuller signal wins. A phrase after a product word
+    # belongs to a later item and does not pre-empt the piece token.
+    phrase_first = bool(phrases) and (
+        pm is None
+        or phrases[0][1] <= pm.start()
+        or phrases[0][1] <= pm.end() + 1
+    )
+    if phrase_first:
         qty, s, e = phrases[0]
         qty_span = (s, e)
+        # Stuttered quantity ('দুই দুই ডজন ডিম'): a bare phrase directly
+        # followed by another phrase + unit means the first was a false
+        # start — advance once to the fuller signal.
+        after_first = segment[e:].lstrip()
+        sub = find_number_phrases(after_first)
+        if sub:
+            sv, ss, se = sub[0]
+            if ss == 0 and any(
+                after_first[se:].lstrip().startswith(uw) for uw in UNITS
+            ):
+                lead = len(segment[e:]) - len(after_first)
+                qty = sv
+                qty_span = (e + lead + ss, e + lead + se)
     unit_factor = 1.0
     unit_kind = None
     rest = segment
@@ -300,7 +329,7 @@ def parse_command(conn, text):
         # a brand name ('সরিষার তেল ফরচুন') are not another item.
         if tail and depth < 3 and (
             find_number_phrases(tail)
-            or re.search(r"(\S+?)(টে|টা|টি|খানা)(?=$|[\s,।])", tail)
+            or re.search(r"(\S+?)(টে|টা|টি|টো|খানা)(?=$|[\s,।])", tail)
         ):
             consume(tail, depth + 1)
 

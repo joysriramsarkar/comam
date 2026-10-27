@@ -177,3 +177,19 @@ def test_new_customer_name_cleanup():
     d = parse_command(conn, "জয় সরকার ২০০ টাকা জমা দিলেন")
     assert d["kind"] == "due_payment" and d["amount"] == 200
     assert d["customer_name"] == "জয় সরকার"
+
+
+def test_spoken_batch2_lessons():
+    # real second-speaker recordings (spoken batch 2, 27 Oct) exposed:
+    conn = make()
+    # clipped দুটা for দুইটা
+    d = parse_command(conn, "এক কেজি চিনি দুটা সাবান")
+    assert d["total"] == 130
+    d = parse_command(conn, "দুটা দুধ সুমিতার নামে বাকিতে")
+    assert d["total"] == 60 and d["payment_type"] == "due"
+    # bare টাকা (no র) still states the price when a product follows
+    d = parse_command(conn, "একশো পঞ্চাশ টাকা সরিষার তেল")
+    assert d["total"] == 150
+    # clipped পনে for পৌনে
+    d = parse_command(conn, "পনে দুই কেজি আলু")
+    assert d["total"] == 52.5
