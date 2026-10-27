@@ -50,15 +50,44 @@ def search_products(conn, query, limit=5):
     return scored, ambiguous
 
 
+def _name_variants(word):
+    """A spoken name token with its case/honorific endings stripped:
+    সুনিতার -> সুনিতা, রহিমদা -> রহিম, করিমকে -> করিম."""
+    out = {word}
+    for suf in ("দার", "দা", "কে", "র"):
+        if word.endswith(suf) and len(word) > len(suf) + 1:
+            out.add(word[: -len(suf)])
+    return out
+
+
 def find_customer(conn, text):
     """Find a customer mentioned by name/alias inside free text."""
     t = normalize(text)
-    for c in conn.execute("SELECT * FROM customers").fetchall():
+    customers = conn.execute("SELECT * FROM customers").fetchall()
+    for c in customers:
         names = [c["name"]] + [a.strip() for a in c["aliases"].split(",") if a.strip()]
         for n in names:
             nn = normalize(n)
             if nn and nn in t:
                 return c
+    # Fuzzy fallback: dictation/ASR near-miss spellings, e.g. 'সুনিতা' for
+    # 'সুমিতা'. Accept only a clear winner (>= 0.8 and ahead of the
+    # runner-up customer), never a coin flip between two customers.
+    words = t.split()
+    windows = list(words) + [" ".join(words[i:i + 2]) for i in range(len(words) - 1)]
+    scored = []
+    for c in customers:
+        names = [c["name"]] + [a.strip() for a in c["aliases"].split(",") if a.strip()]
+        best = 0.0
+        for n in names:
+            nn = normalize(n)
+            for w in windows:
+                for cand in _name_variants(w):
+                    best = max(best, difflib.SequenceMatcher(None, cand, nn).ratio())
+        scored.append((best, c))
+    scored.sort(key=lambda x: -x[0])
+    if scored and scored[0][0] >= 0.8 and (len(scored) == 1 or scored[0][0] - scored[1][0] >= 0.05):
+        return scored[0][1]
     return None
 
 

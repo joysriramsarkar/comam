@@ -95,3 +95,28 @@ def test_takar_weight_fallback_kept():
     conn = make()
     d = parse_command(conn, "৭৫ টাকার চিনি")
     assert d["items"][0]["qty"] == 1.25 and d["total"] == 75
+
+
+def test_joma_with_sho_hundreds():
+    # batch-1 sentence 6, as dictated: 'তিনশো' must parse as 300
+    conn = make()
+    d = parse_command(conn, "করিমদা তিনশো টাকা জমা দিলেন ইউপিআইতে")
+    assert d["kind"] == "due_payment" and d["amount"] == 300
+    assert d["customer"]["name"] == "করিম"
+
+
+def test_unknown_item_keeps_tirisha_stated_price():
+    # batch-1 sentence 2, as dictated: 'তিরিশ' spelling variant
+    conn = make()
+    d = parse_command(conn, "একটা তিরিশ টাকার চিপস বিল করো")
+    assert d["unknown_items"] == [
+        {"text": "চিপস", "qty": 1.0, "stated_price": 30.0}
+    ]
+
+
+def test_fuzzy_customer_from_dictation_spelling():
+    # batch-1 sentence 9: dictation wrote 'সুনিতা' for customer সুমিতা
+    conn = make()
+    d = parse_command(conn, "দুইটা দুধ আর একটা ডিটারজেন্ট সুনিতার নামে বাকিতে")
+    assert d["customer"]["name"] == "সুমিতা"
+    assert d["payment_type"] == "due" and d["total"] == 159

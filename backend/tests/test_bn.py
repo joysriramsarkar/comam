@@ -41,3 +41,11 @@ def test_find_phrases():
 def test_fmt():
     assert fmt_taka(285) == "২৮৫ টাকা"
     assert fmt_taka(2.5) == "২.৫ টাকা"
+
+
+def test_spelling_variants_from_dictation():
+    # variants observed in real dictation (spoken-eval batch 1, 27 Oct)
+    assert find_number_phrases("তিরিশ টাকা")[0][0] == 30
+    assert find_number_phrases("তিনশো টাকা")[0][0] == 300
+    assert find_number_phrases("পাঁচশো টাকা")[0][0] == 500
+    assert find_number_phrases("দুইশো টাকা")[0][0] == 200

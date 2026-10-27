@@ -270,5 +270,18 @@
   "text": "দশ টাকা দামের বিস্কুট",
   "kind": "sale",
   "total": 10
+ },
+ {
+  "text": "করিমদা তিনশো টাকা জমা দিলেন",
+  "kind": "due_payment",
+  "amount": 300,
+  "customer": "করিম"
+ },
+ {
+  "text": "দুইটা দুধ আর একটা সাবান, সুনিতার নামে বাকিতে",
+  "kind": "sale",
+  "total": 95,
+  "customer": "সুমিতা",
+  "payment_type": "due"
  }
 ]

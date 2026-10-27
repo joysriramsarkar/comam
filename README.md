@@ -55,11 +55,11 @@ The split is the point: **AI understands language; code does the accounting.** E
 
 **26 Oct (Day 0):** backend complete (billing spine, due ledger, reports, draft→confirm, ambiguity resolution, editable drafts), frontend built, demo seed data in place. 20 automated tests pass.
 
-**27 Oct (Day 1):** voice verified end-to-end — a real spoken Bengali bill (the founder's own voice note) transcribed cleanly by `muse-voice-transcribe-1.0` and parsed into a draft. That one real sentence exposed four parser gaps, all fixed the same morning: (1) items missing from the catalog (ম্যাগি) are now flagged with the price the shopkeeper stated, never silently dropped, and confirm is blocked until the draft is reviewed; (2) a spoken price picks the variant — "দশ টাকার বিস্কুট" is the ৳10 small pack ×1, not 10 big packs; (3) UPI (ইউপিআই) is a payment type alongside cash and due; (4) a new customer's name is captured and the customer is created on confirm. 24 automated tests pass.
+**27 Oct (Day 1):** voice verified end-to-end — a real spoken Bengali bill (the founder's own voice note) transcribed cleanly by `muse-voice-transcribe-1.0` and parsed into a draft. That one real sentence exposed four parser gaps, all fixed the same morning: (1) items missing from the catalog (ম্যাগি) are now flagged with the price the shopkeeper stated, never silently dropped, and confirm is blocked until the draft is reviewed; (2) a spoken price picks the variant — "দশ টাকার বিস্কুট" is the ৳10 small pack ×1, not 10 big packs; (3) UPI (ইউপিআই) is a payment type alongside cash and due; (4) a new customer's name is captured and the customer is created on confirm. Spoken-eval batch 1 (12 dictated sentences) then found two more: the তিরিশ spelling variant and তিনশো-type "-শো" hundreds are now recognised, and customer matching tolerates a one-letter dictation misspelling (সুনিতা → সুমিতা) with a clear-winner rule. 28 automated tests pass.
 
-**Local-parser eval (offline baseline, `eval/commands.json`, 52 commands):**
-- Intent + customer accuracy: **52/52 (100%)**
-- Sale/purchase total accuracy: **40/40 (100%)** — totals always computed by code from DB prices
+**Local-parser eval (offline baseline, `eval/commands.json`, 54 commands):**
+- Intent + customer accuracy: **54/54 (100%)**
+- Sale/purchase total accuracy: **41/41 (100%)** — totals always computed by code from DB prices
 - Ambiguity detection: flagged, never guessed (বিস্কুট → two pack sizes)
 
 The same command set will be run through the Muse Spark path and with recorded voices (~100 spoken commands) during the hackathon; results will be added here. Run it yourself: `python scripts/run_eval.py`.

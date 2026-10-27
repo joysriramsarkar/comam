@@ -38,7 +38,7 @@ WORD_NUMBERS = {
     "তেরো": 13, "চৌদ্দ": 14, "পনেরো": 15, "ষোলো": 16, "সতেরো": 17,
     "আঠারো": 18, "উনিশ": 19, "বিশ": 20, "কুড়ি": 20, "একুশ": 21,
     "বাইশ": 22, "তেইশ": 23, "চব্বিশ": 24, "পঁচিশ": 25, "ছাব্বিশ": 26,
-    "সাতাশ": 27, "আটাশ": 28, "ঊনত্রিশ": 29, "ত্রিশ": 30, "একত্রিশ": 31,
+    "সাতাশ": 27, "আটাশ": 28, "ঊনত্রিশ": 29, "ত্রিশ": 30, "তিরিশ": 30, "একত্রিশ": 31,
     "বত্রিশ": 32, "তেত্রিশ": 33, "চৌত্রিশ": 34, "পঁয়ত্রিশ": 35,
     "ছত্রিশ": 36, "সাঁইত্রিশ": 37, "আটত্রিশ": 38, "ঊনচল্লিশ": 39,
     "চল্লিশ": 40, "একচল্লিশ": 41, "বিয়াল্লিশ": 42, "তেতাল্লিশ": 43,
@@ -84,6 +84,11 @@ def _base_number(tokens, i):
     elif tok.endswith("শ") and tok[:-1] in WORD_NUMBERS and WORD_NUMBERS[tok[:-1]] < 10:
         # colloquial hundreds: দুইশ (200), তিনশ (300), পাঁচশ (500)
         value = float(WORD_NUMBERS[tok[:-1]] * 100)
+        i += 1
+    elif tok.endswith("শো") and tok[:-2] in WORD_NUMBERS and WORD_NUMBERS[tok[:-2]] < 10:
+        # same hundreds with the -ো ending dictation often produces:
+        # দুইশো (200), তিনশো (300), পাঁচশো (500)
+        value = float(WORD_NUMBERS[tok[:-2]] * 100)
         i += 1
     elif tok in WORD_NUMBERS:
         value = float(WORD_NUMBERS[tok])
