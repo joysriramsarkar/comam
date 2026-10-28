@@ -10,7 +10,7 @@ A small shopkeeper runs the shop by *speaking Bengali*. Say —
 
 > "দুই কেজি চিনি, আধা কেজি মসুর ডাল, তিনটে সাবান — রহিমদার নামে।"
 
-— and comam AI listens, matches the items to the shop's catalog, builds the bill, reads the total back ("মোট ৩৪০ টাকা — নগদ না বাকি?"), and saves the sale only after the shopkeeper says yes. It also keeps the **বাকি খাতা** (the due ledger every small shop lives by) and answers business questions from real data. The pitch in one line: *যে দোকানি ইংরেজি ট্যাপ-স্ক্রিন ভয় পান, তিনি এখন মুখে বললেই হিসাব হয়ে যায়।*
+— and comam AI listens, matches the items to the shop's catalog, builds the bill, reads the total back ("মোট ২৮৫ টাকা — নগদ না বাকি?"), and saves the sale only after the shopkeeper says yes. It also keeps the **বাকি খাতা** (the due ledger every small shop lives by) and answers business questions from real data. The pitch in one line: *যে দোকানি ইংরেজি ট্যাপ-স্ক্রিন ভয় পান, তিনি এখন মুখে বললেই হিসাব হয়ে যায়।*
 
 **Theme:** Build for Your World · **Track:** Indie Developer
 **Built for:** Meta Global AI Developer Hackathon, 26 Oct – 4 Nov 2026.
@@ -90,7 +90,7 @@ This project is designed, written, and built entirely during the hackathon (26 O
 ## Demo (exactly 3 minutes)
 
 - 0:00–0:20 — The problem: a small shop keeping accounts by hand, in Bengali; hands busy, screen untouched.
-- 0:20–1:05 — Voice bill: three items + a customer's name; catalog match, read-back ("মোট ৩৪০ — নগদ না বাকি?"), confirm, sale saved, stock drops.
+- 0:20–1:05 — Voice bill: three items + a customer's name; catalog match, read-back ("মোট ২৮৫ — নগদ না বাকি?"), confirm, sale saved, stock drops.
 - 1:05–1:35 — বাকি: a sale on due to রহিম; "রহিমদা ২০০ টাকা জমা দিলেন"; "রহিমদার কত বাকি?"
 - 1:35–2:10 — Report: "গত সপ্তাহের চেয়ে এই সপ্তাহে বিক্রি কেমন?" — chart + Bengali summary; low-stock answer.
 - 2:10–2:40 — The hard parts: an ambiguous command gets a clarification question; "সাড়ে তিন কেজি" parsed by the deterministic parser; "শেষ বিক্রিটা বাতিল করো" undoes a sale.
