@@ -14,21 +14,24 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .bn import fmt_num, fmt_taka
+from .bn import fmt_num, fmt_taka, format_speech_bn
 from .db import get_conn, init_db
 from .ledger import Ledger
 from .meta_client import MetaClient
 from .parser_local import draft_summary_bn, parse_command
 
-try:
-    # Local development: MODEL_API_KEY etc. live in the repo-root .env.
-    # Optional — in production the environment provides them directly.
-    from dotenv import load_dotenv
+import os
 
-    load_dotenv(Path(__file__).resolve().parents[2] / ".env")
-    load_dotenv()
-except ImportError:
-    pass
+if not os.environ.get("TESTING") and not os.environ.get("PYTEST_CURRENT_TEST"):
+    try:
+        # Local development: MODEL_API_KEY etc. live in the repo-root .env.
+        # Optional — in production the environment provides them directly.
+        from dotenv import load_dotenv
+
+        load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+        load_dotenv()
+    except ImportError:
+        pass
 
 app = FastAPI(title="comam AI")
 meta = MetaClient()
@@ -64,7 +67,20 @@ def _save_draft(draft):
     return cur.lastrowid
 
 
-def _report_answer(report, led: Ledger):
+def _report_answer(report, led: Ledger, draft: dict = None):
+    if report == "product_sales":
+        tp = draft.get("target_product") if draft else None
+        if not tp:
+            return "কোন পণ্যের বিক্রয় জানতে চান তা নির্দিষ্ট করা যায়নি।", {}
+        data = led.product_sales(tp["id"], days=1)
+        if not data:
+            return f"{tp.get('name_bn', 'পণ্য')}-এর কোনো তথ্য পাওয়া যায়নি।", {}
+        sold = data["sold_qty"]
+        tot = data["sales_total"]
+        stock = data["current_stock"]
+        unit = data.get("unit", "")
+        ans = f"{data['name_bn']} আজ {fmt_num(sold)} {unit} বিক্রি হয়েছে (মোট {fmt_taka(tot)})। বর্তমান স্টক: {fmt_num(stock)} {unit}।"
+        return ans, data
     if report == "sales_summary":
         s = led.sales_summary(1, calendar=True)
         return (f"আজ মোট {fmt_taka(s['sales_total'])} বিক্রি হয়েছে "
@@ -100,6 +116,21 @@ def products():
     return [{k: v for k, v in dict(r).items() if k != "cost"} for r in rows]
 
 
+class CustomerCreateIn(BaseModel):
+    name: str
+    phone: str = ""
+    aliases: str = ""
+
+
+@app.post("/api/customers")
+def create_customer(body: CustomerCreateIn):
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "Customer name cannot be empty")
+    c = ledger().create_customer(name, phone=body.phone, aliases=body.aliases)
+    return dict(c)
+
+
 @app.get("/api/customers")
 def customers():
     out = []
@@ -133,21 +164,29 @@ def command(body: CommandIn):
         draft["engine"] = "local"
     kind = draft["kind"]
     if kind == "due_query":
-        if draft.get("customer"):
+        if draft.get("customer_not_found"):
+            c_name = draft.get("customer_name") or "উক্ত"
+            answer = f'"{c_name}" নামে কোনো গ্রাহক খুঁজে পাওয়া যায়নি।'
+        elif draft.get("customer"):
             due = ledger().customer_due(draft["customer"]["id"])
             answer = f"{draft['customer']['name']}-এর বাকি {fmt_taka(due)}।"
         else:
             all_d = ledger().all_dues()
             answer = ("কারো বাকি নেই।" if not all_d else
                       "বাকি আছে: " + ", ".join(f"{d['customer']} {fmt_taka(d['due'])}" for d in all_d) + "।")
-        return {"kind": kind, "answer_bn": answer, "draft": draft}
+        speech = format_speech_bn(answer)
+        return {"kind": kind, "answer_bn": answer, "answer_speech_bn": speech, "draft": draft}
     if kind == "report":
-        answer, data = _report_answer(draft["report"], ledger())
-        return {"kind": kind, "answer_bn": answer, "data": data, "draft": draft}
+        answer, data = _report_answer(draft["report"], ledger(), draft)
+        speech = format_speech_bn(answer)
+        return {"kind": kind, "answer_bn": answer, "answer_speech_bn": speech, "data": data, "draft": draft}
     if kind == "unknown":
+        reply = draft.get("reply") or "বুঝতে পারিনি — আরেকবার বলবেন?"
+        speech = format_speech_bn(reply)
         return {
             "kind": kind,
-            "answer_bn": draft.get("reply") or "বুঝতে পারিনি — আরেকবার বলবেন?",
+            "answer_bn": reply,
+            "answer_speech_bn": speech,
             "draft": draft,
         }
     if kind == "undo":

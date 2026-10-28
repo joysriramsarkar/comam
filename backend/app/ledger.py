@@ -17,6 +17,9 @@ class Ledger:
 
     # ---------- customers ----------
     def get_or_create_customer(self, name):
+        return self.create_customer(name)
+
+    def create_customer(self, name, phone="", aliases=""):
         row = self.conn.execute(
             "SELECT * FROM customers WHERE name=?", (name,)
         ).fetchone()
@@ -24,7 +27,7 @@ class Ledger:
             return row
         cur = self.conn.execute(
             "INSERT INTO customers (name, aliases, phone) VALUES (?,?,?)",
-            (name, "", ""),
+            (name, aliases or "", phone or ""),
         )
         self.conn.commit()
         return self.conn.execute(
@@ -251,6 +254,32 @@ class Ledger:
             "sales_total": round(row["s"], 2),
             "est_profit": round(profit, 2),
         }
+
+    def product_sales(self, product_id, days=1, calendar=True):
+        if calendar and days == 1:
+            since = datetime.now().strftime("%Y-%m-%d 00:00:00")
+        else:
+            since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+        p = self.conn.execute("SELECT * FROM products WHERE id=?", (product_id,)).fetchone()
+        if p is None:
+            return None
+        row = self.conn.execute(
+            "SELECT COALESCE(SUM(si.qty),0) qty, COALESCE(SUM(si.line_total),0) total"
+            " FROM sale_items si"
+            " JOIN sales s ON s.id=si.sale_id"
+            " WHERE s.status='confirmed' AND s.created_at>=? AND si.product_id=?",
+            (since, product_id),
+        ).fetchone()
+        return {
+            "product_id": p["id"],
+            "name_bn": p["name_bn"],
+            "unit": p["unit"],
+            "current_stock": p["stock"],
+            "sold_qty": row["qty"],
+            "sales_total": round(row["total"], 2),
+            "days": days,
+        }
+
 
     def daily_sales(self, days=7):
         out = []

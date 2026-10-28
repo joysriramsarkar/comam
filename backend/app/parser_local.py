@@ -266,13 +266,43 @@ def parse_command(conn, text):
             draft["amount"] = phrases[0][0]
             return draft
 
-    # due query: 'সুমিতার কত বাকি', 'রহিমের কত টাকা বাকি' — the words need
-    # not be adjacent; টাকা often sits between them.
-    if "বাকি" in t and "কত" in t:
+    # due query: 'সুমিতার কত বাকি', 'রহিমের কত টাকা বাকি', 'লক্ষণ সরকারের বাকি কত?'
+    if "বাকি" in t and re.search(r"(?:^|\s)(কত|কাদের|কার|হিসাব)(?:\s|$|[?।,])", t):
         draft["kind"] = "due_query"
+        is_general = bool(re.search(r"(?:^|\s)(কার|কাদের|মোট|সবাই|সকলের)(?:\s|$)", t))
+        if not is_general:
+            if customer is not None:
+                draft["customer"] = {"id": customer["id"], "name": customer["name"]}
+            else:
+                m = re.search(r"([\u0980-\u09FF\w\s]+?)(?:-এর|ের|র)?(?:\s+টাকা)?(?:\s+বাকি\s+কত|\s+কত\s+বাকি|\s+কত\s+টাকা\s+বাকি|\s+বাকি)", t)
+                if m:
+                    target_name = m.group(1).strip()
+                    for h in ("বাবুর", "বাবু", "কাকার", "কাকা", "দার", "দা", "ভাই", "দিদি"):
+                        if target_name.endswith(h) and len(target_name) > len(h) + 1:
+                            target_name = target_name[:-len(h)].strip()
+                    if target_name and not re.search(r"(?:^|\s)(কার|কাদের|মোট|বাকি|কত)(?:\s|$)", target_name):
+                        cust_match = find_customer(conn, target_name)
+                        if cust_match:
+                            draft["customer"] = {"id": cust_match["id"], "name": cust_match["name"]}
+                        else:
+                            draft["customer_name"] = target_name
+                            draft["customer_not_found"] = True
         return draft
 
     # reports
+    # 1. specific product sales report: 'আজকে আমুল শক্তি কয়টা বিক্রি হয়েছে?'
+    if ("কয়টা" in t or "কয়টা" in t or "কত" in t or "কটি" in t) and ("বিক্রি" in t or "সেল" in t):
+        prod_q = re.sub(r"(আজকে|আজ|কয়টা|কয়টা|কত|কটি|বিক্রি|হয়েছে|হলো|শেষ|হিসাব|\?|।)", " ", t)
+        prod_q = re.sub(r"\s+", " ", prod_q).strip()
+        if prod_q and len(prod_q) >= 2:
+            matches, _ = search_products(conn, prod_q)
+            if matches and matches[0][1] >= 0.55:
+                p = matches[0][0]
+                draft["kind"] = "report"
+                draft["report"] = "product_sales"
+                draft["target_product"] = {"id": p["id"], "name_bn": p["name_bn"], "unit": p["unit"]}
+                return draft
+
     if any(w in t for w in ("বিক্রি কেমন", "কত বিক্রি", "বিক্রি কত")) or (
         "বিক্রি" in t and "কত" in t
     ):

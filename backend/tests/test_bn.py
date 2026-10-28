@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from app.bn import find_number_phrases, fmt_taka, parse_number_at  # noqa: E402
+from app.bn import find_number_phrases, fmt_taka, format_speech_bn, parse_number_at  # noqa: E402
 
 
 def p(text):
@@ -58,6 +58,19 @@ def test_compound_hundreds_and_large_fractions():
     assert find_number_phrases("সাড়ে পাঁচশ")[0][0] == 550
     assert find_number_phrases("সাড়ে তিন হাজার")[0][0] == 3500
     assert find_number_phrases("দেড় হাজার")[0][0] == 1500
+
+
+def test_format_speech_bn():
+    # Never say "পুঁটকি", always say "দশমিক"
+    assert "১০২৩ দশমিক ৫" in format_speech_bn("১০২৩.৫")
+    assert "1023 দশমিক 5" in format_speech_bn("1023.5")
+    # Currency symbols
+    assert "১০০ টাকা" in format_speech_bn("৳১০০")
+    # Multiplier
+    assert "গুণ" in format_speech_bn("২ × ৫০")
+    # Trailing periods become danda
+    assert format_speech_bn("হিসাব শেষ.").endswith("।")
+
     assert find_number_phrases("আড়াই হাজার")[0][0] == 2500
     assert find_number_phrases("সাড়ে চার")[0][0] == 4.5
     assert p("half") == 0.5

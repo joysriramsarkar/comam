@@ -59,13 +59,18 @@ WORD_NUMBERS = {
 }
 
 # stand-alone fractional words
-FRACTION_WORDS = {"আধা": 0.5, "অর্ধেক": 0.5, "দেড়": 1.5, "আড়াই": 2.5, "হাফ": 0.5}
+FRACTION_WORDS = {
+    "আধা": 0.5, "অর্ধেক": 0.5, "দেড়": 1.5, "আড়াই": 2.5, "হাফ": 0.5,
+    "আধ": 0.5, "দেড়": 1.5, "আড়াই": 2.5, "half": 0.5
+}
 
 UNITS = {
     "কেজি": ("kg", 1.0), "কিলো": ("kg", 1.0), "কিলোগ্রাম": ("kg", 1.0),
+    "পোয়া": ("kg", 0.25), "পোয়া": ("kg", 0.25), "powa": ("kg", 0.25), "poa": ("kg", 0.25),
     "গ্রাম": ("kg", 0.001), "লিটার": ("litre", 1.0), "লি": ("litre", 1.0),
     "মিলি": ("litre", 0.001), "টা": ("piece", 1.0), "টে": ("piece", 1.0),
-    "টি": ("piece", 1.0), "খানা": ("piece", 1.0), "পিস": ("piece", 1.0),
+    "টি": ("piece", 1.0), "টো": ("piece", 1.0), "খানা": ("piece", 1.0), "পিস": ("piece", 1.0),
+    "প্যাকেট": ("piece", 1.0), "প্যাক": ("piece", 1.0), "বোতল": ("piece", 1.0),
     "ডজন": ("piece", 12.0),
     # English / Banglish units — shopkeepers mix them in ("500 g sugar").
     # Without these, 'g' is ignored and 500 g silently becomes 500 kg.
@@ -202,3 +207,56 @@ def find_number_phrases(text: str):
         else:
             i += 1
     return found
+
+
+def format_speech_bn(text: str) -> str:
+    """Format text for natural Bengali Text-to-Speech (TTS).
+
+    Converts numbers with decimals (e.g. ১০২৩.৫ or 1023.5) into '১০২৩ দশমিক ৫'
+    so speech synthesizers pronounce 'দশমিক' rather than 'পুঁটকি'.
+    Normalises currency symbols, math operators, and punctuation.
+    """
+    if not text:
+        return ""
+    # 1. Decimal points in Bengali or ASCII digits: e.g. 10.5 -> 10 দশমিক 5
+    def _rep_decimal(m):
+        return f"{m.group(1)} দশমিক {m.group(2)}"
+
+    text = re.sub(r"([০-৯]+|\d+)\.([০-৯]+|\d+)", _rep_decimal, text)
+    # 2. Currency symbols: ৳১০০ -> ১০০ টাকা, or standalone ৳ -> টাকা
+    text = re.sub(r"[৳₹]\s*([০-৯]+|\d+)", r"\1 টাকা", text)
+    text = re.sub(r"[৳₹]", " টাকা ", text)
+    # 3. Multiplication operator
+    text = re.sub(r"×", " গুণ ", text)
+    # 4. Strip markdown formatting
+    text = re.sub(r"[*#_`~]", " ", text)
+    # 5. Convert trailing sentence periods to danda so TTS engine pauses cleanly
+    text = re.sub(r"\.(?=\s|$)", "।", text)
+    # 6. Normalize whitespace
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def normalize_colon_artifacts(text: str) -> str:
+    """Normalizes speech recognition colon artifacts like '1:10 টাকা দামের' -> '১০ টাকা দামের'
+    or '1:10' -> '1টা 10'."""
+    if not text:
+        return ""
+    res = re.sub(
+        r"(?:^|\s)(?:[\d০-৯]+):([\d০-৯]+)\s*(টাকা\s*দামের|টাকার\s*দামের|টাকার|টাকা\s*মূল্যের|মূল্যের|দামের|দর|টাকা)",
+        r" \1 \2 ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    res = re.sub(r"([\d০-৯]+):([\d০-৯]+)", r"\1টা \2", res)
+    return re.sub(r"\s+", " ", res).strip()
+
+
+def clean_spoken_punctuation(text: str) -> str:
+    """Strips spoken punctuation words like 'কমা', 'দাঁড়ি', 'দাড়ি', 'ফুলস্টপ'."""
+    if not text:
+        return ""
+    res = re.sub(r"(?:^|\s)কমা(?=$|\s|[।,])", ", ", text, flags=re.IGNORECASE)
+    res = re.sub(r"(?:^|\s)(?:দাঁড়ি|দাড়ি|ফুলস্টপ)(?=$|\s|[।,])", "। ", res, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", res).strip()
+
+

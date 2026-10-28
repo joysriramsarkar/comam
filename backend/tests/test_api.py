@@ -319,3 +319,41 @@ def test_summary_today_means_calendar_day():
     after = client.get("/api/reports/summary?days=1").json()
     assert after["sales_total"] == before["sales_total"]
     assert after["sales_count"] == before["sales_count"]
+
+
+def test_product_sales_report():
+    # Make a sale of 2 kg sugar
+    r = client.post("/api/command", json={"text": "দুই কেজি চিনি নগদ"})
+    d = r.json()
+    client.post(f"/api/drafts/{d['draft_id']}/confirm")
+
+    # Ask for product sales report
+    r_rep = client.post("/api/command", json={"text": "আজকে চিনি কয়টা বিক্রি হয়েছে?"})
+    d_rep = r_rep.json()
+    assert d_rep["kind"] == "report"
+    assert d_rep["draft"]["report"] == "product_sales"
+    assert "চিনি আজ" in d_rep["answer_bn"]
+    assert "বিক্রি হয়েছে" in d_rep["answer_bn"]
+    assert "দশমিক" in d_rep.get("answer_speech_bn", "") or "চিনি আজ" in d_rep.get("answer_speech_bn", "")
+
+
+def test_customer_due_and_create_api():
+    # Create customer via API
+    r_cust = client.post("/api/customers", json={"name": "লক্ষণ সরকার", "phone": "01700000000"})
+    assert r_cust.status_code == 200
+    assert r_cust.json()["name"] == "লক্ষণ সরকার"
+
+    # Query customer due
+    r_due = client.post("/api/command", json={"text": "লক্ষণ সরকারের বাকি কত?"})
+    d_due = r_due.json()
+    assert d_due["kind"] == "due_query"
+    assert d_due["draft"]["customer"]["name"] == "লক্ষণ সরকার"
+    assert "লক্ষণ সরকার-এর বাকি ০ টাকা" in d_due["answer_bn"]
+
+    # Unknown customer due query should flag customer_not_found
+    r_unk = client.post("/api/command", json={"text": "সুধীরকাকার কত বাকি?"})
+    d_unk = r_unk.json()
+    assert d_unk["kind"] == "due_query"
+    assert d_unk["draft"].get("customer_not_found") is True
+    assert "সুধীর" in d_unk["answer_bn"]
+

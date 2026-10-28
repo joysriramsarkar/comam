@@ -54,12 +54,44 @@ def search_products(conn, query, limit=5):
 
 def _name_variants(word):
     """A spoken name token with its case/honorific endings stripped:
-    সুনিতার -> সুনিতা, রহিমদা -> রহিম, করিমকে -> করিম."""
+    সুনিতার -> সুনিতা, রহিমদা -> রহিম, করিমকে -> করিম.
+    Protects root names ending in 'র' like সরকার or সুধীর."""
     out = {word}
-    for suf in ("দার", "দা", "কে", "র"):
+    # Honorifics
+    for suf in ("বাবুর", "বাবু", "কাকার", "কাকা", "দার", "দা", "ভাই", "দিদি", "কে"):
         if word.endswith(suf) and len(word) > len(suf) + 1:
-            out.add(word[: -len(suf)])
+            out.add(word[:-len(suf)])
+    # Genitive endings
+    for suf in ("-এর", "ের"):
+        if word.endswith(suf) and len(word) > len(suf) + 1:
+            out.add(word[:-len(suf)])
+    # Only strip terminal 'র' if preceded by 'া' (e.g. সুনিতার -> সুনিতা, but protect সরকার)
+    if word.endswith("ার") and len(word) > 3 and not word.endswith("সরকার"):
+        out.add(word[:-1])
     return out
+
+
+_BN_TO_LATIN = {
+    'অ': 'o', 'আ': 'a', 'ই': 'i', 'ঈ': 'i', 'উ': 'u', 'ঊ': 'u', 'ঋ': 'ri',
+    'এ': 'e', 'ঐ': 'oi', 'ও': 'o', 'ঔ': 'ou',
+    'ক': 'k', 'খ': 'kh', 'গ': 'g', 'ঘ': 'gh', 'ঙ': 'ng',
+    'চ': 'ch', 'ছ': 'chh', 'জ': 'j', 'ঝ': 'jh', 'ঞ': 'n',
+    'ট': 't', 'ঠ': 'th', 'ড': 'd', 'ঢ': 'dh', 'ণ': 'n',
+    'ত': 't', 'থ': 'th', 'দ': 'd', 'ধ': 'dh', 'ন': 'n',
+    'প': 'p', 'ফ': 'f', 'ব': 'b', 'ভ': 'bh', 'ম': 'm',
+    'য': 'j', 'র': 'r', 'ল': 'l', 'শ': 'sh', 'ষ': 'sh', 'স': 's', 'হ': 'h',
+    'ড়': 'r', 'ঢ়': 'rh', 'য়': 'y', 'ৎ': 't', 'ং': 'ng', 'ঃ': '', 'ঁ': '',
+    'া': 'a', 'ি': 'i', 'ী': 'i', 'ু': 'u', 'ূ': 'u', 'ৃ': 'ri',
+    'ে': 'e', 'ৈ': 'oi', 'ো': 'o', 'ৌ': 'ou', '্': '',
+}
+
+
+def transliterate_bn_to_latin(text: str) -> str:
+    if not text:
+        return ""
+    norm = normalize(text).replace("ক্ষ", "kh")
+    out = "".join(_BN_TO_LATIN.get(ch, ch) for ch in norm)
+    return re.sub(r"\s+", " ", out).strip()
 
 
 def find_customer(conn, text):
@@ -73,8 +105,7 @@ def find_customer(conn, text):
             if nn and nn in t:
                 return c
     # Fuzzy fallback: dictation/ASR near-miss spellings, e.g. 'সুনিতা' for
-    # 'সুমিতা'. Accept only a clear winner (>= 0.8 and ahead of the
-    # runner-up customer), never a coin flip between two customers.
+    # 'সুমিতা' or Latin/English database names.
     words = t.split()
     windows = list(words) + [" ".join(words[i:i + 2]) for i in range(len(words) - 1)]
     scored = []
@@ -83,12 +114,18 @@ def find_customer(conn, text):
         best = 0.0
         for n in names:
             nn = normalize(n)
+            nn_lat = transliterate_bn_to_latin(nn) if re.search(r"[\u0980-\u09FF]", nn) else nn.lower()
             for w in windows:
                 for cand in _name_variants(w):
+                    # Bengali direct match
                     best = max(best, difflib.SequenceMatcher(None, cand, nn).ratio())
+                    # Latin transliteration match
+                    cand_lat = transliterate_bn_to_latin(cand)
+                    if cand_lat and nn_lat:
+                        best = max(best, difflib.SequenceMatcher(None, cand_lat, nn_lat).ratio())
         scored.append((best, c))
     scored.sort(key=lambda x: -x[0])
-    if scored and scored[0][0] >= 0.8 and (len(scored) == 1 or scored[0][0] - scored[1][0] >= 0.05):
+    if scored and scored[0][0] >= 0.78 and (len(scored) == 1 or scored[0][0] - scored[1][0] >= 0.05):
         return scored[0][1]
     return None
 

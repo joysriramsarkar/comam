@@ -160,6 +160,36 @@ TOOL_SCHEMAS = [
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_product_sales",
+            "description": "Sales quantity and stock for a specific product today or over N days (e.g. 'আজকে আমুল শক্তি কয়টা বিক্রি হয়েছে?').",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "product_id": {"type": "integer"},
+                    "days": {"type": "integer"},
+                },
+                "required": ["product_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_customer",
+            "description": "Add a new customer to the database.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "phone": {"type": "string"},
+                },
+                "required": ["name"],
+            },
+        },
+    },
 ]
 
 
@@ -184,6 +214,7 @@ class DraftSession:
         self.intent = "sale"        # "sale" | "purchase" (mark_purchase)
         self.undo = False           # request_undo
         self.report = None          # report tool name, e.g. "sales_summary"
+        self.target_product = None  # target product for product_sales report
         self.due_query_customer = None  # get_customer_due target
 
     def to_draft(self, raw=""):
@@ -217,8 +248,11 @@ class DraftSession:
             # The API answers report drafts itself, from the ledger, in
             # deterministic code — the model's narration never reaches
             # the shopkeeper (Batch G2).
-            return {"kind": "report", "report": self.report,
-                    "ambiguities": [], "raw": raw, "engine": "spark"}
+            rep_draft = {"kind": "report", "report": self.report,
+                         "ambiguities": [], "raw": raw, "engine": "spark"}
+            if self.target_product is not None:
+                rep_draft["target_product"] = self.target_product
+            return rep_draft
         if not self.items and self.due_query_customer is not None:
             return {"kind": "due_query", "customer": self.due_query_customer,
                     "ambiguities": [], "raw": raw, "engine": "spark"}
@@ -367,6 +401,16 @@ def dispatch(session: DraftSession, name: str, args: dict):
             return {"error": "unknown customer"}
         session.due_query_customer = {"id": c["id"], "name": c["name"]}
         return {"due": led.customer_due(c["id"])}
+    if name == "get_product_sales":
+        session.report = "product_sales"
+        p = conn.execute("SELECT id, name_bn, unit, stock FROM products WHERE id=?", (args["product_id"],)).fetchone()
+        if p:
+            session.target_product = {"id": p["id"], "name_bn": p["name_bn"], "unit": p["unit"]}
+        return led.product_sales(args["product_id"], int(args.get("days", 1)))
+    if name == "create_customer":
+        c = led.create_customer(args["name"], args.get("phone", ""))
+        session.customer = {"id": c["id"], "name": c["name"]}
+        return {"customer_id": c["id"], "name": c["name"]}
     return {"error": f"tool not whitelisted: {name}"}
 
 
