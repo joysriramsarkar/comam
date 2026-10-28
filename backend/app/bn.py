@@ -72,6 +72,9 @@ UNITS = {
     "টি": ("piece", 1.0), "টো": ("piece", 1.0), "খানা": ("piece", 1.0), "পিস": ("piece", 1.0),
     "প্যাকেট": ("piece", 1.0), "প্যাক": ("piece", 1.0), "বোতল": ("piece", 1.0),
     "ডজন": ("piece", 12.0),
+    # ASR routinely drops/reorders a letter in ডজন ('দুই দজন ডিম') —
+    # without these the eggs silently become qty 2 instead of 24.
+    "দজন": ("piece", 12.0), "দর্জন": ("piece", 12.0),
     # English / Banglish units — shopkeepers mix them in ("500 g sugar").
     # Without these, 'g' is ignored and 500 g silently becomes 500 kg.
     "g": ("kg", 0.001), "gm": ("kg", 0.001), "gram": ("kg", 0.001),

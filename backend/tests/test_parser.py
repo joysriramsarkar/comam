@@ -209,6 +209,30 @@ def test_large_quantity_warns_but_stays_advisory():
     assert "warnings" not in d
 
 
+def test_dozen_asr_spelling_variants():
+    # Spoken-eval batch 2 (Drive re-score, 28 Oct): ASR wrote ডজন as
+    # দজন / দর্জন for two speakers and the eggs silently became qty 2.
+    conn = make()
+    for text in ("দুই দজন ডিম", "দুই দর্জন ডিম", "দুই ডজন ডিম"):
+        d = parse_command(conn, text)
+        assert d["items"][0]["qty"] == 24, text
+        assert d["total"] == 168, text
+
+
+def test_upi_residue_does_not_double_bill_oil():
+    # Spoken-eval (বিশ্বদেব): '...সরষার তেল, ইউপিআই তে' — stripping the
+    # payment word left the fragment 'তে', which substring-matched তেল
+    # and billed a second litre of oil (₹435 instead of ₹255).
+    conn = make()
+    d = parse_command(conn, "তিন কেজি লবণ ও এক লিটার সরষার তেল, ইউপিআই তে")
+    assert d["payment_type"] == "upi"
+    assert len(d["items"]) == 2
+    assert d["total"] == 255
+    # the fuzzy name WITH a quantity must keep working
+    d = parse_command(conn, "এক লিটার সরষার তেল")
+    assert d["total"] == 180
+
+
 def test_stated_price_worth_despite_fuzzy_extras():
     # 'চাল' fuzzy-matches 'চা পাতা' too, so search returns extras with a
     # clear winner — the worth reading must still win over qty=1.

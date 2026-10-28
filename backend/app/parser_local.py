@@ -168,6 +168,23 @@ def _parse_item_segment(conn, segment):
     info = {"qty": qty, "stated_price": stated_price}
     if not matches:
         return None, None, rest, info, ""
+    if qty is None and stated_price is None:
+        # Residue guard: a fragment carrying no quantity signal of its own
+        # must at least name a matched product verbatim. Stripped payment
+        # words leave fragments like 'তে' (from 'ইউপিআই তে') that
+        # substring-match 'তেল' and would silently bill a litre of oil
+        # nobody ordered. A fuzzy name WITH a quantity ('এক লিটার সরষার
+        # তেল') is unaffected.
+        verbatim = False
+        for p, _s in matches:
+            names = [p["name_bn"], p["name_en"]] + [
+                a.strip() for a in p["aliases"].split(",") if a.strip()
+            ]
+            if any(n and n in rest for n in names):
+                verbatim = True
+                break
+        if not verbatim:
+            return None, None, rest, info, ""
     if qty is None:
         qty = 1.0
     # A stated price picks the variant whose price it is:
