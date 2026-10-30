@@ -3,7 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.db import get_conn, init_db            # noqa: E402
-from app.parser_local import parse_command     # noqa: E402
+from app.parser_local import draft_summary_bn, parse_command     # noqa: E402
 
 
 def make():
@@ -45,6 +45,26 @@ def test_due_payment():
     d = parse_command(conn, "রহিমদা ২০০ টাকা জমা দিলেন")
     assert d["kind"] == "due_payment"
     assert d["amount"] == 200
+
+
+def test_due_payment_two_amounts_asks_not_guesses():
+    # Spoken batch 3, S5: the speaker corrected himself mid-sentence
+    # ('পাঁচশো' first, then 'পাঁচশো পঞ্চাশ'). The parser must ask —
+    # never silently keep the first amount.
+    conn = make()
+    d = parse_command(conn, "সুমিতা পাঁচশো টাকা পাঁচশো পঞ্চাশ টাকা জমা দিলো")
+    assert d["kind"] == "due_payment"
+    assert "amount" not in d
+    assert d["amount_options"] == [500, 550]
+    assert "⚠" in draft_summary_bn(d)
+
+
+def test_due_payment_same_amount_repeated_is_stutter():
+    conn = make()
+    d = parse_command(conn, "রহিমদা পাঁচশো টাকা পাঁচশো টাকা জমা দিলেন")
+    assert d["kind"] == "due_payment"
+    assert d["amount"] == 500
+    assert "amount_options" not in d
 
 
 def test_due_query_and_report():

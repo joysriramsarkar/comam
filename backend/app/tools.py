@@ -7,6 +7,7 @@ after the shopkeeper confirms. There is deliberately no generic
 """
 import json
 
+from .bn import conflicting_amounts
 from .catalog import quantity_warnings, search_products
 from .ledger import Ledger
 
@@ -227,6 +228,14 @@ class DraftSession:
                 "raw": raw,
                 "engine": "spark",
             }
+            # Same money guard as the local parser: two DIFFERENT amounts
+            # in the raw sentence mean a spoken self-correction, so the
+            # model's single picked amount cannot be trusted — drop it
+            # and ask (confirm then fails on its amount guard).
+            amounts = conflicting_amounts(raw)
+            if len(amounts) > 1:
+                del draft["amount"]
+                draft["amount_options"] = amounts
             if self.customer_name and not self.customer:
                 draft["customer_name"] = self.customer_name
             return draft

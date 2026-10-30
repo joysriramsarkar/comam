@@ -120,6 +120,18 @@ def test_overpayment_blocked_exact_payment_ok():
     assert r.status_code == 200 and r.json()["result"]["remaining_due"] == 0
 
 
+def test_two_amount_payment_asks_and_confirm_blocked():
+    # Spoken self-correction (batch 3, S5): two different amounts in
+    # one payment sentence. The draft must ask, not guess — and
+    # confirm must refuse to save anything.
+    d = _cmd("সুমিতা পাঁচশো টাকা পাঁচশো পঞ্চাশ টাকা জমা দিলো")
+    assert d["kind"] == "due_payment"
+    assert d["needs_clarification"] is True
+    assert "amount" not in d["draft"]
+    r = client.post(f"/api/drafts/{d['draft_id']}/confirm")
+    assert r.status_code == 400 and "দুটো অঙ্ক" in r.json()["detail"]
+
+
 def test_reject_semantics():
     assert client.post("/api/drafts/9999/reject").status_code == 404
     d = _cmd("এক কেজি চিনি নগদ")

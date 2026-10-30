@@ -201,7 +201,9 @@ def command(body: CommandIn):
         "draft_id": draft_id,
         "summary_bn": draft_summary_bn(draft),
         "draft": draft,
-        "needs_clarification": bool(draft.get("ambiguities")),
+        "needs_clarification": bool(
+            draft.get("ambiguities") or draft.get("amount_options")
+        ),
     }
 
 
@@ -315,6 +317,14 @@ def _confirm_draft_locked(draft_id: int):
                 customer_id = led.get_or_create_customer(draft["customer_name"])["id"]
             if customer_id is None:
                 raise HTTPException(400, "customer required for due payment")
+            if draft.get("amount_options"):
+                # Two different amounts were heard (a self-correction):
+                # the draft deliberately carries no amount — ask, never
+                # guess. The shopkeeper rejects and re-speaks.
+                opts = " না ".join(fmt_taka(a) for a in draft["amount_options"])
+                raise HTTPException(
+                    400, f"দুটো অঙ্ক শোনা গেছে ({opts}) — কোনটা ঠিক? বাতিল করে আবার বলুন"
+                )
             amount = float(draft.get("amount") or 0)
             if amount <= 0:
                 raise HTTPException(400, "জমার পরিমাণ শূন্যের বেশি হতে হবে")

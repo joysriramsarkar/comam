@@ -92,6 +92,19 @@ def test_spark_new_customer_due_payment():
     assert d["customer_name"] == "অমিত"
 
 
+def test_spark_due_payment_two_amounts_in_raw_asks():
+    # The model picked 500, but the raw sentence carried a spoken
+    # self-correction (500, then 550). to_draft must drop the picked
+    # amount and ask — the same guard as the local parser.
+    s = DraftSession(conn)
+    dispatch(s, "record_due_payment",
+             {"customer_name": "সুমিতা", "amount": 500})
+    d = s.to_draft("সুমিতা পাঁচশো টাকা পাঁচশো পঞ্চাশ টাকা জমা দিলো")
+    assert d["kind"] == "due_payment"
+    assert "amount" not in d
+    assert d["amount_options"] == [500, 550]
+
+
 def test_spark_ambiguous_item_stays_flagged():
     s = DraftSession(conn)
     r = dispatch(s, "search_product", {"query": "বিস্কুট"})

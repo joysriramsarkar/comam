@@ -212,6 +212,17 @@ def find_number_phrases(text: str):
     return found
 
 
+def conflicting_amounts(text: str):
+    """Sorted list of the DISTINCT number-phrase values in text.
+
+    Money commands use this to spot a spoken self-correction
+    ('পাঁচশো টাকা পাঁচশো পঞ্চাশ টাকা জমা দিলো'): two or more different
+    values mean the amount must be asked about, never guessed. The same
+    value repeated is a stutter, not a conflict, and collapses to one.
+    """
+    return sorted({v for v, _, _ in find_number_phrases(text)})
+
+
 def format_speech_bn(text: str) -> str:
     """Format text for natural Bengali Text-to-Speech (TTS).
 

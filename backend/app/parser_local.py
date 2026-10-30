@@ -6,7 +6,13 @@ Ambiguity is reported, never guessed.
 """
 import re
 
-from .bn import UNITS, fmt_taka, find_number_phrases, parse_number_at
+from .bn import (
+    UNITS,
+    conflicting_amounts,
+    fmt_taka,
+    find_number_phrases,
+    parse_number_at,
+)
 from .catalog import (
     extract_new_customer_name,
     extract_payer_name,
@@ -280,6 +286,16 @@ def parse_command(conn, text):
         phrases = find_number_phrases(text)
         if phrases:
             draft["kind"] = "due_payment"
+            amounts = conflicting_amounts(text)
+            if len(amounts) > 1:
+                # Two DIFFERENT amounts in one payment sentence are a
+                # spoken self-correction ('পাঁচশো টাকা পাঁচশো পঞ্চাশ টাকা
+                # জমা দিলো' — spoken batch 3, S5): never silently keep
+                # the first. Carry NO amount and ask instead; confirm
+                # then fails on its amount guard, so nothing can be
+                # saved until the shopkeeper rejects and re-speaks.
+                draft["amount_options"] = amounts
+                return draft
             draft["amount"] = phrases[0][0]
             return draft
 
@@ -438,6 +454,9 @@ def draft_summary_bn(draft):
         return out
     if kind == "due_payment":
         name = (draft.get("customer") or {}).get("name") or draft.get("customer_name", "")
+        if draft.get("amount") is None:
+            opts = " না ".join(fmt_taka(a) for a in draft.get("amount_options", []))
+            return f"জমা: {name} — ⚠ দুটো অঙ্ক শোনা গেছে ({opts}) — কোনটা ঠিক? বাতিল করে আবার বলুন"
         return f"জমা: {name} — {fmt_taka(draft.get('amount', 0))}"
     if kind == "undo":
         return "শেষ বিক্রিটা বাতিল করা হবে"
