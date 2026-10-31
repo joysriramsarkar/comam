@@ -25,6 +25,9 @@ h2 { font-size: 19px; margin: 20px 0 8px; }
 table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: 12px; overflow: hidden; }
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eef1ee; font-size: 15px; }
 .low { color: #b91c1c; font-weight: 700; }
+.meter { height: 8px; background: #e5e7eb; border-radius: 4px; margin-top: 10px; overflow: hidden; }
+.meter > i { display: block; height: 100%; background: var(--green); transition: width .1s linear; }
+.interim { color: var(--mut); font-size: 15px; margin: 8px 0 0; }
 .err { color: #b91c1c; }
 .warnote { color: var(--warn); font-weight: 600; }
 .ackrow { display: flex; gap: 8px; align-items: center; font-weight: 600; margin: 6px 0; }

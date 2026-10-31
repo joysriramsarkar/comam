@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, bnNum, taka, type CommandResponse, type DraftItem, type Product } from "./api";
+import { useVoiceInput } from "./sdk/useVoiceInput";
 
 interface Summary { sales_total: number; sales_count: number; est_profit: number }
 interface Customer { id: number; name: string; due: number }
@@ -12,14 +13,26 @@ export default function App() {
   const [resp, setResp] = useState<CommandResponse | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [listening, setListening] = useState(false);
-  const recogRef = useRef<unknown>(null);
-  const [recording, setRecording] = useState(false);
-  const recorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
+  const [heardText, setHeardText] = useState("");
+  const [itemMode, setItemMode] = useState(false);
   const [daily, setDaily] = useState<{ date: string; count: number; total: number }[]>([]);
   const [editItems, setEditItems] = useState<DraftItem[]>([]);
   const [unknownAck, setUnknownAck] = useState(false);
+
+  // One shared voice path (MP-10/MP-12): record -> server ASR is the
+  // only final text; Web Speech appears only as a live preview caption.
+  const voice = useVoiceInput({
+    transcribe: (blob, filename) => api.transcribe(blob, filename),
+    enablePreview: true,
+    onTranscript: (t) => {
+      setError("");
+      // Item-by-item mode (MP-26): each item is its own short clip,
+      // accumulated into one command — sentence-boundary garbling
+      // cannot take the whole bill down with it.
+      setText((prev) => (itemMode && prev.trim() ? `${prev.replace(/[।,]?\s*$/, "")}, ${t}` : t));
+    },
+    onError: (m) => setError(m),
+  });
 
   const refresh = useCallback(async () => {
     const [p, c, s, d] = await Promise.all([api.products(), api.customers(), api.summary(1), api.daily(7)]);
@@ -36,10 +49,28 @@ export default function App() {
   const send = async () => {
     if (!text.trim()) return;
     setBusy(true); setError("");
+    setHeardText(text.trim()); // transcript read-back snapshot (MP-25)
     try {
       const r = await api.command(text.trim());
       setResp(r);
       if (r.kind === "report" || r.kind === "due_query") setText("");
+    } catch (e) { setError(String(e)); }
+    setBusy(false);
+  };
+
+  const ackAlerts = async () => {
+    if (!resp?.draft_id) return;
+    setBusy(true);
+    try {
+      const r = await api.ackAlerts(resp.draft_id);
+      setResp({
+        ...resp,
+        draft: r.draft,
+        summary_bn: r.summary_bn,
+        needs_clarification:
+          (r.draft?.ambiguities?.length ?? 0) > 0 ||
+          !!(r.draft?.alerts?.length && !r.draft?.alerts_ack),
+      });
     } catch (e) { setError(String(e)); }
     setBusy(false);
   };
@@ -68,7 +99,9 @@ export default function App() {
         ...resp,
         draft: r.draft,
         summary_bn: r.summary_bn,
-        needs_clarification: (r.draft?.ambiguities?.length ?? 0) > 0,
+        needs_clarification:
+          (r.draft?.ambiguities?.length ?? 0) > 0 ||
+          !!(r.draft?.alerts?.length && !r.draft?.alerts_ack),
       });
     } catch (e) { setError(String(e)); }
     setBusy(false);
@@ -82,46 +115,8 @@ export default function App() {
     setResp(null);
   };
 
-  const mic = async () => {
-    // A server-transcribe recording is in progress: this click stops it.
-    if (recorderRef.current) { recorderRef.current.stop(); return; }
-    const SR = (window as unknown as { webkitSpeechRecognition?: unknown; SpeechRecognition?: unknown });
-    const Ctor = (SR.SpeechRecognition || SR.webkitSpeechRecognition) as
-      (new () => { lang: string; onresult: (e: { results: { [k: number]: { [k: number]: { transcript: string } } } }) => void; onend: () => void; start: () => void }) | undefined;
-    if (Ctor) {
-      const rec = new Ctor();
-      rec.lang = "bn-BD";
-      rec.onresult = (e) => setText(e.results[0][0].transcript);
-      rec.onend = () => setListening(false);
-      recogRef.current = rec;
-      setListening(true);
-      rec.start();
-      return;
-    }
-    // No Web Speech in this browser (e.g. Firefox): record the audio and
-    // let the server transcribe it with Meta ASR instead of giving up.
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const rec = new MediaRecorder(stream);
-      chunksRef.current = [];
-      rec.ondataavailable = (e) => { if (e.data.size) chunksRef.current.push(e.data); };
-      rec.onstop = async () => {
-        stream.getTracks().forEach((t) => t.stop());
-        recorderRef.current = null;
-        setRecording(false);
-        try {
-          const r = await api.transcribe(new Blob(chunksRef.current, { type: rec.mimeType || "audio/webm" }));
-          if (r.text) setText(r.text);
-        } catch (e) { setError(String(e)); }
-      };
-      recorderRef.current = rec;
-      setError("");
-      setRecording(true);
-      rec.start();
-    } catch {
-      setError("মাইক্রোফোন পাওয়া যাচ্ছে না — টাইপ করে বলুন");
-    }
-  };
+  const ambPending = (resp?.draft?.ambiguities?.length ?? 0) > 0;
+  const alertPending = !!(resp?.draft?.alerts?.length && !resp.draft?.alerts_ack);
 
   const lowCount = products.filter((p) => p.stock <= p.low_stock_threshold).length;
   const totalDue = customers.reduce((a, c) => a + (c.due || 0), 0);
@@ -146,15 +141,61 @@ export default function App() {
           placeholder="যেমন: দুই কেজি চিনি, তিনটে সাবান, রহিমদার নামে বাকিতে"
         />
         <div className="row">
-          <button className="mic" onClick={mic} disabled={listening}>{listening ? "শুনছি…" : recording ? "⏺ রেকর্ড হচ্ছে — থামাতে চাপুন" : "🎤 বলুন"}</button>
+          <button className="mic" onClick={voice.toggle} disabled={voice.isProcessing}>
+            {voice.isListening
+              ? `⏺ শুনছি… থামাতে চাপুন (${bnNum(voice.elapsedSec)}সে)`
+              : voice.isProcessing
+                ? "ট্রান্সক্রাইব হচ্ছে…"
+                : "🎤 বলুন"}
+          </button>
           <button className="primary" onClick={send} disabled={busy || !text.trim()}>পাঠান</button>
+        </div>
+        {voice.isListening && (
+          <div className="meter" title="মাইকের শব্দের মাত্রা">
+            <i style={{ width: `${Math.round(voice.level * 100)}%` }} />
+          </div>
+        )}
+        {voice.isListening && voice.levelKind === "silent" && (
+          <p className="warnote">মাইক আওয়াজ পাচ্ছে না — কাছে এসে বলুন</p>
+        )}
+        {voice.isListening && voice.levelKind === "clipping" && (
+          <p className="warnote">শব্দ খুব বেশি — একটু দূর থেকে বলুন</p>
+        )}
+        {voice.interimText && (
+          <p className="interim">শুনছি: {voice.interimText}</p>
+        )}
+        <div className="row">
+          <label className="ackrow">
+            <input type="checkbox" checked={itemMode} onChange={(e) => setItemMode(e.target.checked)} />
+            একটা করে আইটেম বলব
+          </label>
+          {voice.devices.length > 1 && (
+            <select
+              value={voice.deviceId}
+              onChange={(e) => voice.setDeviceId(e.target.value)}
+              title="মাইক্রোফোন বাছাই"
+            >
+              <option value="">ডিফল্ট মাইক</option>
+              {voice.devices.map((d, i) => (
+                <option key={d.deviceId || i} value={d.deviceId}>
+                  {d.label || `মাইক ${bnNum(i + 1)}`}
+                </option>
+              ))}
+            </select>
+          )}
+          {voice.lastAudioUrl && (
+            <audio controls src={voice.lastAudioUrl} style={{ height: 28 }} />
+          )}
         </div>
         {error && <p className="err">{error}</p>}
       </div>
 
       {resp?.answer_bn && <div className="answer">{resp.answer_bn}</div>}
+      {resp && heardText && (
+        <div className="answer">আমি শুনলাম: <b>{heardText}</b></div>
+      )}
 
-      {resp?.draft_id && resp.draft && !resp.needs_clarification && (
+      {resp?.draft_id && resp.draft && !ambPending && (
         <div className="draft">
           <div className="sum">{resp.summary_bn}</div>
           <ul className="editlist">
@@ -187,8 +228,22 @@ export default function App() {
           {!!resp.draft.warnings?.length && (
             <p className="warnote">⚠ {resp.draft.warnings.join("; ")}</p>
           )}
+          {alertPending && (
+            <div className="amb">
+              <div>⚠ পরিমাণ যাচাই করুন:</div>
+              {resp.draft.alerts!.map((a, i) => (
+                <p key={i} className="warnote">{a.message_bn}</p>
+              ))}
+              <div className="row">
+                <button className="primary" onClick={ackAlerts} disabled={busy}>
+                  হ্যাঁ, পরিমাণ ঠিক আছে
+                </button>
+                <button onClick={reject}>বাতিল করে আবার বলুন</button>
+              </div>
+            </div>
+          )}
           <div className="row">
-            <button className="primary" onClick={confirm} disabled={busy || (!!resp.draft.unknown_items?.length && !unknownAck)}>✓ ঠিক আছে, সেভ করুন</button>
+            <button className="primary" onClick={confirm} disabled={busy || alertPending || (!!resp.draft.unknown_items?.length && !unknownAck)}>✓ ঠিক আছে, সেভ করুন</button>
             <button onClick={reject}>বাতিল</button>
           </div>
         </div>

@@ -7,14 +7,19 @@ Reports and due-queries are read-only and answered immediately.
 """
 import json
 import threading
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
-from .bn import fmt_num, fmt_taka, format_speech_bn
+from .asr.base import TranscriptionError
+from .asr.muse import biasing_enabled, ffmpeg_available
+from .bn import fmt_num, fmt_taka, format_speech_bn, normalize_asr
+from .catalog import quantity_alerts
 from .db import get_conn, init_db
 from .ledger import Ledger
 from .meta_client import MetaClient
@@ -35,6 +40,17 @@ if not os.environ.get("TESTING") and not os.environ.get("PYTEST_CURRENT_TEST"):
 
 app = FastAPI(title="comam AI")
 meta = MetaClient()
+if meta.enabled and not ffmpeg_available():
+    # MP-14: voice must not die silently on a machine without ffmpeg.
+    # The browser path now uploads WAV (no conversion needed), but any
+    # non-WAV upload to /api/transcribe will 503 until ffmpeg exists.
+    import sys
+
+    print(
+        "WARNING: ffmpeg not found — non-WAV audio uploads to "
+        "/api/transcribe will fail (503). Install ffmpeg on the server.",
+        file=sys.stderr,
+    )
 _conn = None
 # One shared SQLite connection => draft mutations (confirm / reject /
 # resolve / items) are serialised per process. Together with the
@@ -149,7 +165,9 @@ def dues():
 
 @app.post("/api/command")
 def command(body: CommandIn):
-    text = body.text.strip()
+    # Surface-level ASR artifact cleanup at the door (colon artifacts,
+    # spoken punctuation). Number MEANINGS are never altered here.
+    text = normalize_asr(body.text.strip())
     if not text:
         raise HTTPException(400, "empty command")
     draft = None
@@ -195,6 +213,13 @@ def command(body: CommandIn):
         last = ledger().last_sale()
         if last:
             draft["target_sale_id"] = last["id"]
+    if kind in ("sale", "purchase"):
+        # Blocking quantity alerts (MP-24): unusually large quantities
+        # must be explicitly acknowledged before confirm. The quantity
+        # in the draft is exactly what was heard — never remapped.
+        alerts = quantity_alerts(draft.get("items") or [], raw_text=text)
+        draft["alerts"] = alerts
+        draft["alerts_ack"] = not alerts
     draft_id = _save_draft(draft)
     return {
         "kind": kind,
@@ -202,7 +227,9 @@ def command(body: CommandIn):
         "summary_bn": draft_summary_bn(draft),
         "draft": draft,
         "needs_clarification": bool(
-            draft.get("ambiguities") or draft.get("amount_options")
+            draft.get("ambiguities")
+            or draft.get("amount_options")
+            or (draft.get("alerts") and not draft.get("alerts_ack"))
         ),
     }
 
@@ -237,6 +264,10 @@ def _confirm_draft_locked(draft_id: int):
         if draft["kind"] == "sale":
             if draft.get("ambiguities"):
                 raise HTTPException(400, "resolve ambiguities first")
+            if draft.get("alerts") and not draft.get("alerts_ack"):
+                raise HTTPException(
+                    400, "বড় পরিমাণ যাচাই করা হয়নি — আগে নিশ্চিত করুন"
+                )
             if draft.get("unknown_items"):
                 names = ", ".join(u["text"] for u in draft["unknown_items"])
                 raise HTTPException(
@@ -292,6 +323,10 @@ def _confirm_draft_locked(draft_id: int):
             # flagged as ambiguous or unknown must never stock a guessed item.
             if draft.get("ambiguities"):
                 raise HTTPException(400, "resolve ambiguities first")
+            if draft.get("alerts") and not draft.get("alerts_ack"):
+                raise HTTPException(
+                    400, "বড় পরিমাণ যাচাই করা হয়নি — আগে নিশ্চিত করুন"
+                )
             if draft.get("unknown_items"):
                 names = ", ".join(u["text"] for u in draft["unknown_items"])
                 raise HTTPException(
@@ -442,6 +477,18 @@ def _store_draft(draft_id: int, draft):
     conn().commit()
 
 
+@app.post("/api/drafts/{draft_id}/alerts/ack")
+def ack_draft_alerts(draft_id: int):
+    """Shopkeeper explicitly confirmed the large-quantity alert(s).
+
+    This only flips the acknowledgement flag — quantities in the draft
+    remain exactly what was heard (never remapped, MP-24)."""
+    draft = _load_draft(draft_id)
+    draft["alerts_ack"] = True
+    _store_draft(draft_id, draft)
+    return {"draft": draft, "summary_bn": draft_summary_bn(draft)}
+
+
 def _rebuild_items(raw_items):
     """Recompute item rows from DB prices (client/parser prices never trusted)."""
     out = []
@@ -506,6 +553,10 @@ def resolve_draft(draft_id: int, body: ResolveIn):
     draft["items"][pos] = rebuilt[0]
     draft["total"] = round(sum(i["line_total"] for i in draft["items"]), 2)
     draft["ambiguities"] = [a for j, a in enumerate(ambs) if j != idx]
+    # The settled line may itself be a large quantity: recompute the
+    # blocking alerts so resolve cannot bypass the quantity check.
+    draft["alerts"] = quantity_alerts(draft["items"], raw_text=draft.get("raw", ""))
+    draft["alerts_ack"] = not draft["alerts"]
     _store_draft(draft_id, draft)
     return {"draft": draft, "summary_bn": draft_summary_bn(draft)}
 
@@ -524,6 +575,11 @@ def edit_draft_items(draft_id: int, body: ItemsIn):
     # clicked past by accident.
     if body.acknowledge_unknown:
         draft.pop("unknown_items", None)
+    # An edit can RAISE a quantity past the alert line: recompute the
+    # blocking alerts and require a fresh acknowledgement, so the
+    # quantity guard cannot be edited around.
+    draft["alerts"] = quantity_alerts(draft["items"], raw_text=draft.get("raw", ""))
+    draft["alerts_ack"] = not draft["alerts"]
     draft["total"] = round(sum(i["line_total"] for i in draft["items"]), 2)
     _store_draft(draft_id, draft)
     return {"draft": draft, "summary_bn": draft_summary_bn(draft)}
@@ -531,7 +587,19 @@ def edit_draft_items(draft_id: int, body: ItemsIn):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "spark_enabled": meta.enabled}
+    import os
+
+    return {
+        "ok": True,
+        "spark_enabled": meta.enabled,
+        # Voice-path observability: "voice is dead" must be diagnosable
+        # without waiting for a user upload (ffmpeg absence used to be
+        # invisible until the first transcription failed).
+        "ffmpeg_available": ffmpeg_available(),
+        "voice_engine": os.getenv("VOICE_ENGINE", "meta"),
+        "voice_preprocess": os.getenv("VOICE_PREPROCESS", "v0"),
+        "voice_biasing": biasing_enabled(),
+    }
 
 
 @app.get("/api/reports/daily")
@@ -539,16 +607,77 @@ def report_daily(days: int = 7):
     return ledger().daily_sales(days)
 
 
+MAX_TRANSCRIBE_BYTES = 5 * 1024 * 1024  # ~5 MB upload cap (MP-13)
+
+
+def _asr_keywords():
+    """Catalog vocabulary for ASR biasing (Appendix B of the plan).
+
+    Built only when VOICE_BIASING=on; deduped, capped, frequent words
+    first (seed order ≈ shelf order). Never cached across catalog
+    edits for longer than this process's request — the DB is tiny.
+    """
+    words: list[str] = []
+    seen: set[str] = set()
+
+    def add(w):
+        w = (w or "").strip()
+        if w and w not in seen:
+            seen.add(w)
+            words.append(w)
+
+    for p in conn().execute("SELECT name_bn, name_en, aliases FROM products"):
+        add(p["name_bn"])
+        add(p["name_en"])
+        for a in (p["aliases"] or "").split(","):
+            add(a)
+    for c in conn().execute("SELECT name, aliases FROM customers"):
+        add(c["name"])
+        for a in (c["aliases"] or "").split(","):
+            add(a)
+    for w in ("কেজি", "গ্রাম", "লিটার", "পিস", "ডজন", "টাকা", "বাকি",
+              "জমা", "নগদ", "ইউপিআই", "পৌনে", "সাড়ে", "দেড়", "আধা"):
+        add(w)
+    return words[:200]
+
+
 @app.post("/api/transcribe")
 async def transcribe(file: UploadFile = File(...)):
     if not meta.enabled:
         raise HTTPException(501, "MODEL_API_KEY not set on server")
-    data = await file.read()
+    # Read at most cap+1 bytes: an unbounded read of an arbitrary upload
+    # into memory (plus WAV conversion copies) was a trivial DoS.
+    data = await file.read(MAX_TRANSCRIBE_BYTES + 1)
+    if len(data) > MAX_TRANSCRIBE_BYTES:
+        raise HTTPException(413, "অডিও ফাইল খুব বড় (সর্বোচ্চ ৫ MB)")
+    if not data:
+        raise HTTPException(400, "খালি অডিও পাঠানো হয়েছে")
+    keywords = _asr_keywords() if biasing_enabled() else None
+    started = time.monotonic()
     try:
-        text = meta.transcribe(data, file.filename or "audio.webm")
-    except Exception as e:  # model id/format unverified until Day-1 test
-        raise HTTPException(502, f"transcription failed: {e}")
-    return {"text": text}
+        # meta.transcribe_detailed blocks (ffmpeg + HTTPS): keep it off
+        # the event loop so a slow upload cannot stall confirms.
+        result = await run_in_threadpool(
+            meta.transcribe_detailed, data, file.filename or "audio.webm", keywords
+        )
+    except TranscriptionError as e:
+        status = {
+            "ffmpeg_missing": 503,
+            "invalid_audio": 400,
+            "not_configured": 501,
+        }.get(e.kind, 502)
+        raise HTTPException(status, str(e))
+    except Exception:
+        raise HTTPException(502, "transcription failed")
+    text = normalize_asr(result.text)
+    return {
+        "text": text,
+        "alternatives": result.alternatives,
+        "confidence": result.confidence,
+        "duration_ms": int((time.monotonic() - started) * 1000),
+        "warnings": [] if text else ["no_speech"],
+        "engine": result.engine,
+    }
 
 
 # Serve the built frontend when present (frontend/dist).

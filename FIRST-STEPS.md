@@ -62,6 +62,29 @@
   (incl. eval results), final video, repo public + links checked, submit
   at night. Deadline is 5 Nov 07:30 IST — never aim for it.
 
+## Voice operations (VOICE-MASTER-PLAN, implemented on feat/voice-master-plan)
+
+- **One voice path:** mic → record → `POST /api/transcribe` (Meta ASR)
+  is the only final transcript, in the standalone app and the SDK
+  widget alike. Browser Web Speech is a live preview caption only.
+  The browser converts recordings to 24 kHz mono WAV before upload,
+  so the normal path needs **no ffmpeg**; ffmpeg is still required on
+  the server for non-WAV uploads (startup prints a warning and
+  `/api/health` reports `ffmpeg_available` when it is missing).
+- **Flags (env):** `VOICE_ENGINE=meta`, `VOICE_PREPROCESS=v0|v1|v2|v3`
+  (ffmpeg chains — change only with `scripts/replay_asr.py` evidence),
+  `VOICE_SAMPLE_RATE=24000|16000`, `VOICE_BIASING=on|off` (default on;
+  `languageBias` list + catalog keywords, proven HTTP 200 by
+  `scripts/asr_spike.py`, results in `eval/asr-capability.json`).
+- **Measuring voice:** save consented clips as `eval/audio/*.wav` +
+  sidecar JSON (see `eval/audio/README.md`), then run
+  `python scripts/replay_asr.py`. WER, number accuracy, entity and
+  exact-cart are reported separately — never claim an improvement
+  without those numbers.
+- **Money rule unchanged:** a heard quantity is never remapped
+  (পনেরো stays 15); ≥10 kg/litre or ≥100 pieces blocks confirm until
+  the shopkeeper acknowledges the quantity alert.
+
 ## Hard rules carried over
 
 - Scope stays at the frozen core in README.md. New ideas go in a

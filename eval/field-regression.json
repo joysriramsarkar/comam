@@ -1,0 +1,42 @@
+[
+ {
+  "id": "FR-1",
+  "source": "pos-app field test 2026-10-31",
+  "heard": "কিন্ডার ক্রিমি দুইশোটা",
+  "failure": "200 pieces of a product silently entered the bill",
+  "expected": "Blocking large-quantity alert (>=100 piece) before confirm; quantity itself is never altered",
+  "comam_mechanism": "catalog.quantity_alerts + draft.alerts_ack + confirm guard (MP-24); covered by backend/tests/test_voice.py (kg form)"
+ },
+ {
+  "id": "FR-2",
+  "source": "pos-app field test 2026-10-31",
+  "heard": "গোল্ড ফ্লেক ১৩ পিস",
+  "failure": "Quantity/price cross-wire risk between product variants",
+  "expected": "Exactly 13 pieces of the stated product/variant; a spoken price picks the variant, quantity never migrates between lines",
+  "comam_mechanism": "parser stated-price variant selection + aggregated confirm guards; pos-app side: MP-41 matcher guard"
+ },
+ {
+  "id": "FR-3",
+  "source": "pos-app field test 2026-10-31",
+  "heard": "প্রদীপ ডিলে (দিলেন)",
+  "failure": "Customer name প্রদীপ heard as the verb দিলেন, so the customer vanished / a wrong new customer was proposed",
+  "expected": "Phonetic customer candidates are suggested and confirmed; a new customer is never created silently from a garbled name",
+  "comam_mechanism": "catalog.find_customer phonetic-key boost (MP-24); pos-app side: MP-42"
+ },
+ {
+  "id": "FR-4",
+  "source": "pos-app field test 2026-10-31",
+  "heard": "1:10 টাকা দামের বিস্কুট",
+  "failure": "ASR colon artifact made the price unparseable",
+  "expected": "Transcript normalized to '10 টাকা দামের বিস্কুট' before parsing; no number meaning invented beyond dropping the artifact prefix",
+  "comam_mechanism": "bn.normalize_asr wired into /api/command and /api/transcribe (MP-23); covered by backend/tests/test_voice.py"
+ },
+ {
+  "id": "FR-5",
+  "source": "pos-app field test 2026-10-31",
+  "heard": "আমূল দুধ -> দই (শোনা)",
+  "failure": "Brand product (আমূল দুধ) heard as a different product (দই) and silently substituted",
+  "expected": "Closest catalog candidates are offered as a clarification; a phonetically different product is never silently swapped in",
+  "comam_mechanism": "catalog.search_products ambiguity margin + phonetic boost only for same-skeleton names (MP-24); pos-app side: MP-41/MP-42"
+ }
+]

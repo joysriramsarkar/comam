@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import type { ComamPOSAdapter, POSSaleDraft, POSSaleItemDraft } from './types';
 import { ComamAgent, type ComamAgentResponse } from './comam-agent';
 import { speakBengali, stopSpeech } from './speech-utils';
+import { useVoiceInput } from './useVoiceInput';
 
 export interface ComamVoiceWidgetProps {
   adapter: ComamPOSAdapter;
@@ -15,16 +16,35 @@ export function ComamVoiceWidget({
   position = 'bottom-right',
 }: ComamVoiceWidgetProps) {
   const [isOpen, setIsOpen] = useState<boolean>(false);
-  const [isListening, setIsListening] = useState<boolean>(false);
   const [inputText, setInputText] = useState<string>('');
-  const [, setTranscript] = useState<string>('');
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [agentResponse, setAgentResponse] = useState<ComamAgentResponse | null>(null);
   const [isCreatingCustomer, setIsCreatingCustomer] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const recognitionRef = useRef<any>(null);
   const agentRef = useRef<ComamAgent>(new ComamAgent(adapter));
+
+  // The one shared voice path (MP-10/MP-11): record -> adapter's server
+  // ASR when provided; browser speech only as the degraded fallback.
+  // The transcript lands in the input box for the shopkeeper to see —
+  // it is processed only when they press send (no more first-final
+  // auto-submit cutting a bill in half).
+  const voice = useVoiceInput({
+    transcribe: adapter.transcribeAudio
+      ? async (blob, filename) => {
+          const r = await adapter.transcribeAudio!(blob, filename);
+          return typeof r === 'string' ? { text: r } : r;
+        }
+      : undefined,
+    onTranscript: (t) => {
+      setInputText(t);
+      setErrorMsg(null);
+    },
+    onError: (m) => setErrorMsg(m),
+  });
+  const isListening = voice.isListening;
+  const startListening = voice.start;
+  const stopListening = voice.stop;
 
   // Update agent if adapter instance changes
   useEffect(() => {
@@ -34,7 +54,6 @@ export function ComamVoiceWidget({
   // Clean state when modal opens
   const resetState = useCallback(() => {
     setInputText('');
-    setTranscript('');
     setAgentResponse(null);
     setErrorMsg(null);
     stopSpeech();
@@ -64,77 +83,8 @@ export function ComamVoiceWidget({
     []
   );
 
-  const startListening = useCallback(() => {
-    if (typeof window === 'undefined') return;
-
-    const SpeechRecognition =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-
-    if (!SpeechRecognition) {
-      setErrorMsg('আপনার ব্রাউজারে স্পিচ রিকগনিশন সমর্থিত নয়। দয়া করে লিখে কমান্ড দিন।');
-      return;
-    }
-
-    try {
-      resetState();
-      const recognition = new SpeechRecognition();
-      recognition.lang = 'bn-BD';
-      recognition.continuous = false;
-      recognition.interimResults = true;
-
-      recognition.onstart = () => {
-        setIsListening(true);
-        setErrorMsg(null);
-      };
-
-      recognition.onresult = (event: any) => {
-        let finalTxt = '';
-        let interimTxt = '';
-
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const item = event.results[i];
-          if (item.isFinal) {
-            finalTxt += item[0].transcript;
-          } else {
-            interimTxt += item[0].transcript;
-          }
-        }
-
-        const current = finalTxt || interimTxt;
-        setTranscript(current);
-        setInputText(current);
-
-        if (finalTxt.trim()) {
-          recognition.stop();
-          handleProcessText(finalTxt);
-        }
-      };
-
-      recognition.onerror = (event: any) => {
-        console.warn('[Comam Widget] Speech recognition error:', event.error);
-        setIsListening(false);
-      };
-
-      recognition.onend = () => {
-        setIsListening(false);
-      };
-
-      recognitionRef.current = recognition;
-      recognition.start();
-    } catch (err) {
-      console.error('[Comam Widget] Failed to start speech recognition:', err);
-      setIsListening(false);
-    }
-  }, [handleProcessText, resetState]);
-
-  const stopListening = useCallback(() => {
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
-      setIsListening(false);
-    }
-  }, []);
-
-  // Keyboard shortcut Alt+V to open and immediately start voice
+  // Keyboard shortcut Alt+V to open the widget (voice starts only on
+  // an explicit mic press — no auto-start; see MASTER-PLAN §4.1.2)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.altKey && (e.key === 'v' || e.key === 'V')) {
@@ -146,19 +96,18 @@ export function ComamVoiceWidget({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // Auto-start recording when modal opens
+  // Opening the modal only resets state. Recording starts on an
+  // explicit mic press: the old 250 ms auto-start fired while the
+  // permission dialog / TTS tail was still in the air and died with
+  // a silent no-speech (MASTER-PLAN MP-11).
   useEffect(() => {
     if (isOpen) {
       resetState();
-      const timer = setTimeout(() => {
-        startListening();
-      }, 250);
-      return () => clearTimeout(timer);
     } else {
       stopSpeech();
       stopListening();
     }
-  }, [isOpen, resetState, startListening, stopListening]);
+  }, [isOpen, resetState, stopListening]);
 
   // 1-Click Create Customer handler
   const handleCreateCustomer = async () => {
@@ -425,17 +374,38 @@ export function ComamVoiceWidget({
 
               {/* Listening indicator */}
               {isListening && (
-                <div style={{ marginTop: '10px', display: 'flex', alignItems: 'center', gap: '8px', color: '#059669', fontSize: '13px' }}>
-                  <span
-                    style={{
-                      width: '8px',
-                      height: '8px',
-                      borderRadius: '50%',
-                      backgroundColor: '#ef4444',
-                      display: 'inline-block',
-                    }}
-                  />
-                  রেকর্ড হচ্ছে... স্পষ্ট করে বলুন
+                <div style={{ marginTop: '10px', color: '#059669', fontSize: '13px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span
+                      style={{
+                        width: '8px',
+                        height: '8px',
+                        borderRadius: '50%',
+                        backgroundColor: '#ef4444',
+                        display: 'inline-block',
+                      }}
+                    />
+                    রেকর্ড হচ্ছে... স্পষ্ট করে বলুন, শেষ হলে আবার মাইক বোতাম চাপুন
+                  </div>
+                  <div style={{ height: '6px', backgroundColor: '#e5e7eb', borderRadius: '3px', marginTop: '6px', overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: `${Math.round(voice.level * 100)}%`, backgroundColor: '#059669' }} />
+                  </div>
+                  {voice.levelKind === 'silent' && (
+                    <div style={{ color: '#b45309', marginTop: '4px' }}>মাইক আওয়াজ পাচ্ছে না — কাছে এসে বলুন</div>
+                  )}
+                  {voice.interimText && (
+                    <div style={{ color: '#6b7280', marginTop: '4px' }}>শুনছি: {voice.interimText}</div>
+                  )}
+                </div>
+              )}
+              {voice.isProcessing && (
+                <div style={{ marginTop: '10px', color: '#059669', fontSize: '13px' }}>
+                  ট্রান্সক্রাইব হচ্ছে...
+                </div>
+              )}
+              {voice.degraded && inputText && (
+                <div style={{ marginTop: '10px', color: '#b45309', fontSize: '13px' }}>
+                  ব্রাউজারের ভয়েসে শুনেছি — লেখাটা ঠিক আছে কিনা দেখে তারপর ➤ পাঠান।
                 </div>
               )}
 

@@ -1,4 +1,6 @@
 .env
+# Local-only planning doc (never published — see file header)
+VOICE-MASTER-PLAN.md
 .venv/
 __pycache__/
 *.pyc

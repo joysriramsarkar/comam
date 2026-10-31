@@ -9,6 +9,9 @@ import re
 BN_DIGITS = "০১২৩৪৫৬৭৮৯"
 _TO_ASCII = str.maketrans(BN_DIGITS, "0123456789")
 _TO_BN = str.maketrans("0123456789", BN_DIGITS)
+# ASR engines occasionally emit Devanagari digits (०१२३४५६७८९, U+0966-096F)
+# for Bengali speech; without this every such number silently vanished.
+_TO_ASCII.update(str.maketrans("०१२३४५६७८९", "0123456789"))
 
 
 def bn_to_ascii(text: str) -> str:
@@ -271,6 +274,23 @@ def clean_spoken_punctuation(text: str) -> str:
         return ""
     res = re.sub(r"(?:^|\s)কমা(?=$|\s|[।,])", ", ", text, flags=re.IGNORECASE)
     res = re.sub(r"(?:^|\s)(?:দাঁড়ি|দাড়ি|ফুলস্টপ)(?=$|\s|[।,])", "। ", res, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", res).strip()
+
+
+def normalize_asr(text: str) -> str:
+    """Clean a raw ASR transcript before it reaches the parser.
+
+    Only surface artifacts are touched — spoken-punctuation words and
+    colon artifacts ('1:10 টাকা' -> '10 টাকা'). The MEANING of a number
+    is never changed here: 'পনেরো কেজি' stays 'পনেরো কেজি' (the
+    পৌনে/পনেরো confusion is handled by asking, never by remapping).
+    Safe to apply to typed input too: ordinary commands pass through
+    unchanged except whitespace.
+    """
+    if not text:
+        return ""
+    res = clean_spoken_punctuation(text)
+    res = normalize_colon_artifacts(res)
     return re.sub(r"\s+", " ", res).strip()
 
 

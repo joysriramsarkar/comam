@@ -30,6 +30,32 @@ export function formatForBengaliSpeech(text: string): string {
   return formatted.replace(/\s+/g, ' ').trim();
 }
 
+// Chrome returns an EMPTY voice list on the first getVoices() call; the
+// real list arrives with 'voiceschanged'. Cache + listen once, so the
+// Bengali voice is actually found instead of silently falling back to
+// the default (non-Bengali) voice (MASTER-PLAN MP-15).
+let cachedVoices: SpeechSynthesisVoice[] = [];
+if (typeof window !== "undefined" && "speechSynthesis" in window) {
+  const load = () => {
+    cachedVoices = window.speechSynthesis.getVoices();
+  };
+  load();
+  window.speechSynthesis.addEventListener?.("voiceschanged", load);
+}
+
+export function bengaliVoice(): SpeechSynthesisVoice | undefined {
+  const voices = cachedVoices.length
+    ? cachedVoices
+    : typeof window !== "undefined" && "speechSynthesis" in window
+      ? window.speechSynthesis.getVoices()
+      : [];
+  return (
+    voices.find((v) => (v.lang === "bn-BD" || v.lang === "bn-IN") && /natural|online/i.test(v.name)) ||
+    voices.find((v) => v.lang === "bn-BD" || v.lang === "bn-IN" || v.lang.startsWith("bn")) ||
+    voices.find((v) => /bengali|bangla/i.test(v.name))
+  );
+}
+
 /**
  * Speak text in natural Bengali using Web Speech API with calibrated voice and rate.
  */
@@ -55,12 +81,7 @@ export function speakBengali(
     utterance.rate = options?.rate ?? 0.94;
     utterance.pitch = options?.pitch ?? 1.0;
 
-    const voices = window.speechSynthesis.getVoices();
-    const bnVoice =
-      voices.find((v) => (v.lang === 'bn-BD' || v.lang === 'bn-IN') && /natural|online/i.test(v.name)) ||
-      voices.find((v) => v.lang === 'bn-BD' || v.lang === 'bn-IN' || v.lang.startsWith('bn')) ||
-      voices.find((v) => /bengali|bangla/i.test(v.name));
-
+    const bnVoice = bengaliVoice();
     if (bnVoice) {
       utterance.voice = bnVoice;
     }

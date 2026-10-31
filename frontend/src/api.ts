@@ -6,6 +6,14 @@ export interface DraftItem {
   product_id: number; name_bn: string; qty: number; unit: string;
   unit_price: number; line_total: number;
 }
+export interface DraftAlert {
+  type: string;
+  product_id?: number | null;
+  name_bn?: string;
+  qty: number;
+  unit: string;
+  message_bn: string;
+}
 export interface Draft {
   kind: string;
   items?: DraftItem[];
@@ -15,9 +23,19 @@ export interface Draft {
   customer_name?: string;
   unknown_items?: { text: string; qty?: number; stated_price?: number | null }[];
   warnings?: string[];
+  alerts?: DraftAlert[];
+  alerts_ack?: boolean;
   amount?: number;
   ambiguities?: { text: string; options: { product_id: number; name_bn: string; price: number }[] }[];
   engine?: string;
+}
+export interface TranscribeResponse {
+  text: string;
+  alternatives: string[];
+  confidence: number | null;
+  duration_ms: number;
+  warnings: string[];
+  engine: string;
 }
 export interface CommandResponse {
   kind: string;
@@ -61,9 +79,13 @@ export const api = {
     }).then(j),
   daily: (days = 7): Promise<{ date: string; count: number; total: number }[]> =>
     fetch(`/api/reports/daily?days=${days}`).then(j),
-  transcribe: (blob: Blob): Promise<{ text: string }> => {
+  ackAlerts: (id: number) =>
+    fetch(`/api/drafts/${id}/alerts/ack`, { method: "POST" }).then(j),
+  transcribe: (blob: Blob, filename = "audio.wav"): Promise<TranscribeResponse> => {
     const fd = new FormData();
-    fd.append("file", blob, "audio.webm");
+    // The filename follows the blob's REAL mime type — hardcoding
+    // audio.webm broke Safari (audio/mp4) uploads (plan K9).
+    fd.append("file", blob, filename);
     return fetch("/api/transcribe", { method: "POST", body: fd }).then(j);
   },
 };

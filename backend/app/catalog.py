@@ -26,11 +26,30 @@ def _names(product):
     return [normalize(n) for n in names]
 
 
+# Bengali letters ASR routinely swaps for each other. Folding them (and
+# dropping vowel signs) gives a consonant skeleton: 'শাবান' and 'সাবান'
+# share it, so a dictation slip still finds the product. Used ONLY as an
+# exact-key boost — never to rewrite what the shopkeeper said, and never
+# on numbers.
+_PHONETIC_FOLD = str.maketrans({
+    "ভ": "ব", "ষ": "শ", "স": "শ", "ণ": "ন", "ঞ": "ন",
+})
+_VOWEL_SIGNS = "ািীুূৃেৈোৌ্ংঃঁ"
+
+
+def phonetic_key(text: str) -> str:
+    t = normalize(text).translate(_PHONETIC_FOLD)
+    # ড়/ঢ়/য় may arrive decomposed (ড + ়), so fold them textually.
+    t = t.replace("ড়", "ড").replace("ঢ়", "ঢ").replace("য়", "য")
+    return "".join(ch for ch in t if ch not in _VOWEL_SIGNS and ch != " ")
+
+
 def search_products(conn, query, limit=5):
     """Return (matches, ambiguous). matches: list of (product_row, score)."""
     q = normalize(query)
     products = conn.execute("SELECT * FROM products").fetchall()
     scored = []
+    qk = phonetic_key(q) if q else ""
     for p in products:
         best = 0.0
         for name in _names(p):
@@ -40,6 +59,10 @@ def search_products(conn, query, limit=5):
                 best = max(best, 0.9)
             else:
                 best = max(best, difflib.SequenceMatcher(None, q, name).ratio())
+            # ASR letter-swap with the same consonant skeleton (শাবান≈সাবান):
+            # a clear phonetic hit, ranked below an exact/substring match.
+            if qk and qk == phonetic_key(name):
+                best = max(best, 0.88)
         if best >= 0.55:
             scored.append((p, best))
     scored.sort(key=lambda x: -x[1])
@@ -115,10 +138,14 @@ def find_customer(conn, text):
         for n in names:
             nn = normalize(n)
             nn_lat = transliterate_bn_to_latin(nn) if re.search(r"[\u0980-\u09FF]", nn) else nn.lower()
+            ck = phonetic_key(nn)
             for w in windows:
                 for cand in _name_variants(w):
                     # Bengali direct match
                     best = max(best, difflib.SequenceMatcher(None, cand, nn).ratio())
+                    # Same consonant skeleton (ASR letter-swap): clear hit.
+                    if ck and phonetic_key(cand) == ck:
+                        best = max(best, 0.9)
                     # Latin transliteration match
                     cand_lat = transliterate_bn_to_latin(cand)
                     if cand_lat and nn_lat:
@@ -227,6 +254,43 @@ def quantity_warnings(items):
                 f"{i['name_bn']} {qty:g} {unit} — পরিমাণটা বড়, ঠিক আছে কিনা দেখে নিন"
             )
     return out
+
+
+def quantity_alerts(items, raw_text=""):
+    """BLOCKING quantity checks (VOICE-MASTER-PLAN MP-24).
+
+    Same thresholds family as quantity_warnings but at/above the line
+    (>=10 kg/litre, >=100 piece) confirm is blocked until the shopkeeper
+    explicitly acknowledges. The quantity itself is NEVER changed: if
+    ASR heard পনেরো for পৌনে, the draft keeps 15 and the alert asks —
+    remapping a real 15 down to 0.75 would be the worst money bug.
+    """
+    alerts = []
+    text = raw_text or ""
+    for i in items:
+        qty, unit = float(i.get("qty") or 0), i.get("unit")
+        big = (unit in ("kg", "litre") and qty >= 10) or (
+            unit == "piece" and qty >= 100
+        )
+        if not big:
+            continue
+        msg = (
+            f"{i['name_bn']} {qty:g} {unit} — পরিমাণটা অস্বাভাবিক বড়। "
+            "ঠিক এটাই বলেছিলেন তো?"
+        )
+        if "পনেরো" in text and unit in ("kg", "litre"):
+            msg += " (পনেরো শুনেছি — পৌনে বলেছিলেন কিনা যাচাই করুন)"
+        alerts.append(
+            {
+                "type": "large_quantity",
+                "product_id": i.get("product_id"),
+                "name_bn": i.get("name_bn"),
+                "qty": qty,
+                "unit": unit,
+                "message_bn": msg,
+            }
+        )
+    return alerts
 
 
 if __name__ == "__main__":

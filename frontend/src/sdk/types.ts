@@ -94,4 +94,13 @@ export interface ComamPOSAdapter {
   createCustomer(name: string, phone?: string): Promise<POSCustomer>;
   commitSale?(draft: POSSaleDraft): Promise<POSSaleResult>;
   addToCart?(draft: POSSaleDraft): Promise<void> | void;
+  /**
+   * Server-side speech-to-text for the recorded clip (MASTER-PLAN MP-11).
+   * When provided, the widget records audio and the FINAL transcript
+   * comes from this function (e.g. your backend's Meta ASR endpoint) —
+   * never from the browser's Web Speech engine. When omitted, the
+   * widget degrades to browser speech recognition and the transcript
+   * is shown for the shopkeeper to confirm before processing.
+   */
+  transcribeAudio?(blob: Blob, filename: string): Promise<string | { text: string }>;
 }

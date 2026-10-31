@@ -1,0 +1,10 @@
+{
+  "file": "documented-f1 (spoken batch 2, transcript only — no audio kept)",
+  "expected_text": "পৌনে দুই কেজি চিনি",
+  "transcript": "পনেরো কেজি চিনি",
+  "expected_items": [{"name_bn": "চিনি", "qty": 1.75}],
+  "speaker": "batch2",
+  "device": "unknown",
+  "noise": "quiet",
+  "note": "ASR heard পৌনে (0.75 to) as পনেরো (15). Expected behaviour today: the draft keeps 15 and the blocking quantity alert asks — never a silent remap. exact_cart therefore 'fails' here BY DESIGN; watch number_accuracy + the alert instead."
+}

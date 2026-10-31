@@ -1,0 +1,66 @@
+{
+ "baseline_no_bias": {
+  "status": 200,
+  "keys": [
+   "audioDurationMs",
+   "sessionId",
+   "transcript",
+   "turns"
+  ],
+  "transcript_preview": ""
+ },
+ "languageBias_string": {
+  "status": 400,
+  "error": "{\"sessionId\":\"voyager/transcribe/DB73381BC4FF4082873FCF428930769B\",\"error\":{\"code\":null,\"param\":null,\"type\":\"invalid_request_error\",\"message\":\"Malformed request\"}}"
+ },
+ "languageBias_list": {
+  "status": 200,
+  "keys": [
+   "audioDurationMs",
+   "sessionId",
+   "transcript",
+   "turns"
+  ],
+  "transcript_preview": ""
+ },
+ "languageBias_list_en": {
+  "status": 200,
+  "keys": [
+   "audioDurationMs",
+   "sessionId",
+   "transcript",
+   "turns"
+  ],
+  "transcript_preview": ""
+ },
+ "keywords": {
+  "status": 200,
+  "keys": [
+   "audioDurationMs",
+   "sessionId",
+   "transcript",
+   "turns"
+  ],
+  "transcript_preview": ""
+ },
+ "bias_list_plus_keywords": {
+  "status": 200,
+  "keys": [
+   "audioDurationMs",
+   "sessionId",
+   "transcript",
+   "turns"
+  ],
+  "transcript_preview": ""
+ },
+ "mode_endpointing": {
+  "status": 200,
+  "keys": [
+   "audioDurationMs",
+   "sessionId",
+   "transcript",
+   "turns"
+  ],
+  "transcript_preview": ""
+ }
+}
