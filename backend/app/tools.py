@@ -129,12 +129,20 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "get_customer_due",
-            "description": "How much a customer currently owes (বাকি).",
+            "description": "How much a specific customer currently owes (বাকি).",
             "parameters": {
                 "type": "object",
                 "properties": {"customer_id": {"type": "integer"}},
                 "required": ["customer_id"],
             },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_all_dues",
+            "description": "Get the due ledger summary or list of all customers who owe money and the shop's total due balance (কার কার কত বাকি / কার কত বাকি / মোট কত বাকি / বাকি খাতা / সকল ক্রেতার বাকি).",
+            "parameters": {"type": "object", "properties": {}},
         },
     },
     {
@@ -217,6 +225,7 @@ class DraftSession:
         self.report = None          # report tool name, e.g. "sales_summary"
         self.target_product = None  # target product for product_sales report
         self.due_query_customer = None  # get_customer_due target
+        self.due_query_general = False  # get_all_dues target
 
     def to_draft(self, raw=""):
         if self.due_payment:
@@ -262,6 +271,9 @@ class DraftSession:
             if self.target_product is not None:
                 rep_draft["target_product"] = self.target_product
             return rep_draft
+        if not self.items and self.due_query_general:
+            return {"kind": "due_query", "customer": None,
+                    "ambiguities": [], "raw": raw, "engine": "spark"}
         if not self.items and self.due_query_customer is not None:
             return {"kind": "due_query", "customer": self.due_query_customer,
                     "ambiguities": [], "raw": raw, "engine": "spark"}
@@ -401,6 +413,9 @@ def dispatch(session: DraftSession, name: str, args: dict):
     if name == "get_week_compare":
         session.report = "week_compare"
         return led.week_compare()
+    if name == "get_all_dues":
+        session.due_query_general = True
+        return {"dues": led.all_dues()}
     if name == "get_customer_due":
         c = conn.execute(
             "SELECT id, name FROM customers WHERE id=?",
@@ -452,7 +467,7 @@ provided tools. Rules:
 - If they ask to cancel the last sale (বাতিল করো), call request_undo and
   nothing else — the system builds an undo draft for them to confirm.
 - For business questions (sales, low stock, top products, week compare,
-  a customer's বাকি), call the matching report/due tool and keep your
+  all dues/বাকি খাতা across the shop via get_all_dues, or a specific customer's বাকি via get_customer_due), call the matching report/due tool and keep your
   own reply to one short line: the system answers with the real numbers
   computed in code, so never state amounts yourself.
 - Never invent prices or totals: prices come from search_product results,

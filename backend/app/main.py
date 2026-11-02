@@ -6,6 +6,7 @@ POST /api/drafts/{id}/confirm — the shopkeeper always confirms first.
 Reports and due-queries are read-only and answered immediately.
 """
 import json
+import re
 import threading
 import time
 from pathlib import Path
@@ -180,6 +181,16 @@ def command(body: CommandIn):
     if draft is None:
         draft = parse_command(conn(), text)
         draft["engine"] = "local"
+
+    # Enforce general due query if phrase clearly asks for all dues across the shop
+    if ("বাকি" in text or "বকেয়া" in text or "দেনা" in text) and re.search(
+        r"(?:^|\s)(কার\s+কার|কার|কাদের|সকলের|সবার|দোকানের|মোট|সব|সবাই)\s*(?:কত|কতো|টাকা|বাকি|হিসাব)", text
+    ):
+        draft["kind"] = "due_query"
+        draft["customer"] = None
+        draft.pop("customer_name", None)
+        draft.pop("customer_not_found", None)
+
     kind = draft["kind"]
     if kind == "due_query":
         if draft.get("customer_not_found"):
@@ -225,6 +236,7 @@ def command(body: CommandIn):
         "kind": kind,
         "draft_id": draft_id,
         "summary_bn": draft_summary_bn(draft),
+        "summary_speech_bn": format_speech_bn(draft_summary_bn(draft)),
         "draft": draft,
         "needs_clarification": bool(
             draft.get("ambiguities")

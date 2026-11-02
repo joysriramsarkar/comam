@@ -50,6 +50,8 @@ export interface UseVoiceInputOptions {
   /** Live Web Speech caption while recording (never submitted). */
   enablePreview?: boolean;
   maxDurationSec?: number;
+  /** Silence timeout in ms for automatic stop after speaking. Default 1400ms (0 to disable). */
+  autoStopSilenceMs?: number;
 }
 
 /** Decode any recorded blob and re-encode as 24 kHz mono 16-bit WAV. */
@@ -131,6 +133,12 @@ export function useVoiceInput(options: UseVoiceInputOptions) {
   /** True when the final text came from Web Speech, not server ASR. */
   const [degraded, setDegraded] = useState(false);
 
+  const autoStopSilenceMs = options.autoStopSilenceMs ?? 1400;
+  const speechDetectedRef = useRef(false);
+  const silenceMsRef = useRef(0);
+  const autoStoppingRef = useRef(false);
+  const fallbackTimerRef = useRef<number | null>(null);
+
   const streamRef = useRef<MediaStream | null>(null);
   const streamDeviceRef = useRef<string>("__none__");
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -200,6 +208,8 @@ export function useVoiceInput(options: UseVoiceInputOptions) {
     levelTimerRef.current = null;
     if (maxTimerRef.current) window.clearTimeout(maxTimerRef.current);
     maxTimerRef.current = null;
+    if (fallbackTimerRef.current) window.clearTimeout(fallbackTimerRef.current);
+    fallbackTimerRef.current = null;
     setLevel(0);
   }, []);
 
@@ -224,14 +234,32 @@ export function useVoiceInput(options: UseVoiceInputOptions) {
             peak = Math.max(peak, Math.abs(x));
           }
           peakRef.current = Math.max(peakRef.current, peak);
-          setLevel(Math.min(1, Math.sqrt(sum / data.length) * 3));
+          const curLevel = Math.min(1, Math.sqrt(sum / data.length) * 3);
+          setLevel(curLevel);
           setElapsedSec(Math.floor((Date.now() - startedAtRef.current) / 1000));
+
+          // Voice Activity & Silence Auto-Stop
+          if (autoStopSilenceMs > 0 && !autoStoppingRef.current) {
+            if (curLevel >= 0.04 || peak >= 0.08) {
+              speechDetectedRef.current = true;
+              silenceMsRef.current = 0;
+            } else if (speechDetectedRef.current) {
+              silenceMsRef.current += 100;
+              const elapsed = Date.now() - startedAtRef.current;
+              if (silenceMsRef.current >= autoStopSilenceMs && elapsed >= 1000) {
+                autoStoppingRef.current = true;
+                if (recorderRef.current?.state === "recording") {
+                  recorderRef.current.stop();
+                }
+              }
+            }
+          }
         }, 100);
       } catch {
         /* meter is feedback only */
       }
     },
-    []
+    [autoStopSilenceMs]
   );
 
   const stopPreview = useCallback(() => {
@@ -257,6 +285,10 @@ export function useVoiceInput(options: UseVoiceInputOptions) {
         let txt = "";
         for (let i = 0; i < ev.results.length; i++) txt += ev.results[i][0].transcript;
         setInterimText(txt); // display only — never submitted
+        if (txt.trim()) {
+          speechDetectedRef.current = true;
+          silenceMsRef.current = 0;
+        }
       };
       rec.onerror = () => stopPreview(); // preview failure is silent
       rec.onend = () => { previewRef.current = null; };
@@ -351,6 +383,12 @@ export function useVoiceInput(options: UseVoiceInputOptions) {
           else interim += item[0].transcript;
         }
         setInterimText((fallbackFinalRef.current + interim).trim());
+        if (autoStopSilenceMs > 0) {
+          if (fallbackTimerRef.current) window.clearTimeout(fallbackTimerRef.current);
+          fallbackTimerRef.current = window.setTimeout(() => {
+            try { fallbackRef.current?.stop(); } catch { /* noop */ }
+          }, autoStopSilenceMs);
+        }
       };
       rec.onerror = (ev: { error: string }) => {
         if (ev.error !== "aborted") fail(voiceErrorMessage(ev.error));
@@ -382,6 +420,13 @@ export function useVoiceInput(options: UseVoiceInputOptions) {
     setInterimText("");
     setElapsedSec(0);
     peakRef.current = 0;
+    speechDetectedRef.current = false;
+    silenceMsRef.current = 0;
+    autoStoppingRef.current = false;
+    if (fallbackTimerRef.current) {
+      window.clearTimeout(fallbackTimerRef.current);
+      fallbackTimerRef.current = null;
+    }
 
     if (!optsRef.current.transcribe) {
       startFallback();

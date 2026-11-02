@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, bnNum, taka, type CommandResponse, type DraftItem, type Product } from "./api";
 import { useVoiceInput } from "./sdk/useVoiceInput";
+import { speakBengali, stopSpeech } from "./sdk/speech-utils";
 
 interface Summary { sales_total: number; sales_count: number; est_profit: number }
 interface Customer { id: number; name: string; due: number }
@@ -19,17 +20,23 @@ export default function App() {
   const [editItems, setEditItems] = useState<DraftItem[]>([]);
   const [unknownAck, setUnknownAck] = useState(false);
 
+  const sendRef = useRef<(textOverride?: string) => Promise<void>>(async () => {});
+
   // One shared voice path (MP-10/MP-12): record -> server ASR is the
   // only final text; Web Speech appears only as a live preview caption.
   const voice = useVoiceInput({
     transcribe: (blob, filename) => api.transcribe(blob, filename),
     enablePreview: true,
+    autoStopSilenceMs: 1400,
     onTranscript: (t) => {
       setError("");
-      // Item-by-item mode (MP-26): each item is its own short clip,
-      // accumulated into one command — sentence-boundary garbling
-      // cannot take the whole bill down with it.
-      setText((prev) => (itemMode && prev.trim() ? `${prev.replace(/[।,]?\s*$/, "")}, ${t}` : t));
+      if (itemMode) {
+        setText((prev) => (prev.trim() ? `${prev.replace(/[।,]?\s*$/, "")}, ${t}` : t));
+      } else {
+        setText(t);
+        // Hands-free: auto-send directly so user doesn't need to press "পাঠান"
+        void sendRef.current(t);
+      }
     },
     onError: (m) => setError(m),
   });
@@ -46,16 +53,28 @@ export default function App() {
 
   useEffect(() => { refresh().catch(() => setError("সার্ভারে সংযোগ যাচ্ছে না")); }, [refresh]);
 
-  const send = async () => {
-    if (!text.trim()) return;
+  const send = async (textOverride?: string) => {
+    const q = (textOverride !== undefined ? textOverride : text).trim();
+    if (!q) return;
+    stopSpeech();
     setBusy(true); setError("");
-    setHeardText(text.trim()); // transcript read-back snapshot (MP-25)
+    setHeardText(q); // transcript read-back snapshot (MP-25)
     try {
-      const r = await api.command(text.trim());
+      const r = await api.command(q);
       setResp(r);
+      const toSpeak = r.answer_speech_bn || r.summary_speech_bn || r.answer_bn || r.summary_bn;
+      if (toSpeak) {
+        speakBengali(toSpeak);
+      }
       if (r.kind === "report" || r.kind === "due_query") setText("");
     } catch (e) { setError(String(e)); }
     setBusy(false);
+  };
+  sendRef.current = send;
+
+  const handleMicClick = () => {
+    stopSpeech();
+    voice.toggle();
   };
 
   const ackAlerts = async () => {
@@ -77,6 +96,7 @@ export default function App() {
 
   const confirm = async () => {
     if (!resp?.draft_id) return;
+    stopSpeech();
     setBusy(true);
     try {
       // Only sale/purchase drafts have editable items — due payments and
@@ -85,6 +105,7 @@ export default function App() {
         await api.updateItems(resp.draft_id, editItems.map((i) => ({ product_id: i.product_id, qty: i.qty })), unknownAck);
       }
       await api.confirm(resp.draft_id);
+      speakBengali("বিল সফলভাবে সেভ হয়েছে।");
       setResp(null); setText(""); await refresh();
     } catch (e) { setError(String(e)); }
     setBusy(false);
@@ -92,6 +113,7 @@ export default function App() {
 
   const resolveDraft = async (productId: number, ambiguityIndex: number) => {
     if (!resp?.draft_id) return;
+    stopSpeech();
     setBusy(true);
     try {
       const r = await api.resolve(resp.draft_id, productId, ambiguityIndex);
@@ -99,10 +121,13 @@ export default function App() {
         ...resp,
         draft: r.draft,
         summary_bn: r.summary_bn,
+        summary_speech_bn: r.summary_speech_bn,
         needs_clarification:
           (r.draft?.ambiguities?.length ?? 0) > 0 ||
           !!(r.draft?.alerts?.length && !r.draft?.alerts_ack),
       });
+      const toSpeak = r.summary_speech_bn || r.summary_bn;
+      if (toSpeak) speakBengali(toSpeak);
     } catch (e) { setError(String(e)); }
     setBusy(false);
   };
@@ -111,6 +136,7 @@ export default function App() {
     setEditItems((items) => items.map((it, i) => (i === idx ? { ...it, qty: Math.max(0, qty) } : it)));
 
   const reject = async () => {
+    stopSpeech();
     if (resp?.draft_id) await api.reject(resp.draft_id).catch(() => {});
     setResp(null);
   };
@@ -141,14 +167,14 @@ export default function App() {
           placeholder="যেমন: দুই কেজি চিনি, তিনটে সাবান, রহিমদার নামে বাকিতে"
         />
         <div className="row">
-          <button className="mic" onClick={voice.toggle} disabled={voice.isProcessing}>
+          <button className="mic" onClick={handleMicClick} disabled={voice.isProcessing}>
             {voice.isListening
-              ? `⏺ শুনছি… থামাতে চাপুন (${bnNum(voice.elapsedSec)}সে)`
+              ? `⏺ শুনছি… কথা থামলে একা জমা হবে (${bnNum(voice.elapsedSec)}সে)`
               : voice.isProcessing
                 ? "ট্রান্সক্রাইব হচ্ছে…"
                 : "🎤 বলুন"}
           </button>
-          <button className="primary" onClick={send} disabled={busy || !text.trim()}>পাঠান</button>
+          <button className="primary" onClick={() => send()} disabled={busy || !text.trim()}>পাঠান</button>
         </div>
         {voice.isListening && (
           <div className="meter" title="মাইকের শব্দের মাত্রা">
@@ -190,14 +216,36 @@ export default function App() {
         {error && <p className="err">{error}</p>}
       </div>
 
-      {resp?.answer_bn && <div className="answer">{resp.answer_bn}</div>}
+      {resp?.answer_bn && (
+        <div className="answer" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span>{resp.answer_bn}</span>
+          <button
+            type="button"
+            style={{ marginLeft: 12, padding: "4px 10px", fontSize: 13, cursor: "pointer", borderRadius: 4, border: "1px solid #ccc", background: "#f8f9fa" }}
+            onClick={() => speakBengali(resp.answer_speech_bn || resp.answer_bn!)}
+            title="আবার শুনুন"
+          >
+            🔊 শুনুন
+          </button>
+        </div>
+      )}
       {resp && heardText && (
         <div className="answer">আমি শুনলাম: <b>{heardText}</b></div>
       )}
 
       {resp?.draft_id && resp.draft && !ambPending && (
         <div className="draft">
-          <div className="sum">{resp.summary_bn}</div>
+          <div className="sum" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span>{resp.summary_bn}</span>
+            <button
+              type="button"
+              style={{ marginLeft: 12, padding: "4px 10px", fontSize: 13, cursor: "pointer", borderRadius: 4, border: "1px solid #ccc", background: "#f8f9fa" }}
+              onClick={() => speakBengali(resp.summary_speech_bn || resp.summary_bn!)}
+              title="আবার শুনুন"
+            >
+              🔊 শুনুন
+            </button>
+          </div>
           <ul className="editlist">
             {editItems.map((i, idx) => (
               <li key={i.product_id}>

@@ -299,27 +299,32 @@ def parse_command(conn, text):
             draft["amount"] = phrases[0][0]
             return draft
 
-    # due query: 'সুমিতার কত বাকি', 'রহিমের কত টাকা বাকি', 'লক্ষণ সরকারের বাকি কত?'
-    if "বাকি" in t and re.search(r"(?:^|\s)(কত|কাদের|কার|হিসাব)(?:\s|$|[?।,])", t):
+    # due query: 'সুমিতার কত বাকি', 'রহিমের কত টাকা বাকি', 'লক্ষণ সরকারের বাকি কত?', 'কার কার কত টাকা বাকি আছে?'
+    if ("বাকি" in t or "বকেয়া" in t or "দেনা" in t) and re.search(r"(?:^|\s)(কত|কতো|কাদের|কার|হিসাব|আছে|বলো|জানাও|দেখাও)(?:\s|$|[?।,])", t):
         draft["kind"] = "due_query"
-        is_general = bool(re.search(r"(?:^|\s)(কার|কাদের|মোট|সবাই|সকলের)(?:\s|$)", t))
-        if not is_general:
-            if customer is not None:
-                draft["customer"] = {"id": customer["id"], "name": customer["name"]}
-            else:
-                m = re.search(r"([\u0980-\u09FF\w\s]+?)(?:-এর|ের|র)?(?:\s+টাকা)?(?:\s+বাকি\s+কত|\s+কত\s+বাকি|\s+কত\s+টাকা\s+বাকি|\s+বাকি)", t)
-                if m:
-                    target_name = m.group(1).strip()
-                    for h in ("বাবুর", "বাবু", "কাকার", "কাকা", "দার", "দা", "ভাই", "দিদি"):
-                        if target_name.endswith(h) and len(target_name) > len(h) + 1:
-                            target_name = target_name[:-len(h)].strip()
-                    if target_name and not re.search(r"(?:^|\s)(কার|কাদের|মোট|বাকি|কত)(?:\s|$)", target_name):
-                        cust_match = find_customer(conn, target_name)
-                        if cust_match:
-                            draft["customer"] = {"id": cust_match["id"], "name": cust_match["name"]}
-                        else:
-                            draft["customer_name"] = target_name
-                            draft["customer_not_found"] = True
+        is_general = bool(re.search(r"(?:^|\s)(কার\s+কার|কার|কাদের|সকলের|সবার|দোকানের|মোট|সব|সবাই)(?:\s|$)", t))
+        if is_general:
+            draft["customer"] = None
+            draft.pop("customer_name", None)
+            draft.pop("customer_not_found", None)
+            return draft
+
+        if customer is not None:
+            draft["customer"] = {"id": customer["id"], "name": customer["name"]}
+        else:
+            m = re.search(r"([\u0980-\u09FF\w\s]+?)(?:-এর|ের|র)?(?:\s+টাকা)?(?:\s+বাকি\s+কত|\s+কত\s+বাকি|\s+কত\s+টাকা\s+বাকি|\s+বাকি)", t)
+            if m:
+                target_name = m.group(1).strip()
+                for h in ("বাবুর", "বাবু", "কাকার", "কাকা", "দার", "দা", "ভাই", "দিদি"):
+                    if target_name.endswith(h) and len(target_name) > len(h) + 1:
+                        target_name = target_name[:-len(h)].strip()
+                if target_name and not re.search(r"(?:^|\s)(কার|কাদের|মোট|বাকি|কত)(?:\s|$)", target_name):
+                    cust_match = find_customer(conn, target_name)
+                    if cust_match:
+                        draft["customer"] = {"id": cust_match["id"], "name": cust_match["name"]}
+                    else:
+                        draft["customer_name"] = target_name
+                        draft["customer_not_found"] = True
         return draft
 
     # reports

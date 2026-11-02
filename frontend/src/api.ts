@@ -41,7 +41,9 @@ export interface CommandResponse {
   kind: string;
   draft_id?: number;
   summary_bn?: string;
+  summary_speech_bn?: string;
   answer_bn?: string;
+  answer_speech_bn?: string;
   draft?: Draft;
   needs_clarification?: boolean;
   data?: unknown;
