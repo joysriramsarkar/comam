@@ -15,7 +15,7 @@ console.log('\x1b[36m%s\x1b[0m', '==============================================
 console.log('\x1b[36m%s\x1b[0m', '      Starting Comam AI (Backend + Frontend)    ');
 console.log('\x1b[36m%s\x1b[0m', '================================================\n');
 
-// 1. Start Python Backend on port 8000
+// 1. Start Python Backend on port 8000 (shell: false prevents Windows path space issues)
 console.log('\x1b[32m%s\x1b[0m', '[1/2] Starting Python Backend on http://localhost:8000 ...');
 const backend = spawn(
   uvicornBin,
@@ -23,7 +23,7 @@ const backend = spawn(
   {
     cwd: backendDir,
     stdio: 'inherit',
-    shell: true,
+    shell: false,
   }
 );
 
