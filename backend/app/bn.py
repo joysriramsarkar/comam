@@ -88,6 +88,31 @@ UNITS = {
     "pcs": ("piece", 1.0), "piece": ("piece", 1.0),
 }
 
+UNIT_TO_BN: dict[str, str] = {
+    "kg": "কেজি",
+    "piece": "পিস",
+    "litre": "লিটার",
+    "liter": "লিটার",
+    "gram": "গ্রাম",
+    "g": "গ্রাম",
+    "ml": "মিলি",
+    "bag": "বস্তা",
+    "box": "বাক্স",
+    "pack": "প্যাকেট",
+    "packet": "প্যাকেট",
+    "bottle": "বোতল",
+    "dozen": "ডজন",
+    "pcs": "পিস",
+}
+
+
+def unit_to_bn(unit: str) -> str:
+    """Translate an internal unit identifier to Bengali for display and speech."""
+    if not unit:
+        return ""
+    clean = str(unit).strip().lower()
+    return UNIT_TO_BN.get(clean, unit)
+
 
 def _rest_under(tokens, i, limit):
     """A plain following number below `limit` (digits or a 0-99 word),
@@ -109,7 +134,8 @@ def _base_number(tokens, i):
     if i >= len(tokens):
         return None, i
     tok = tokens[i]
-    ascii_tok = bn_to_ascii(tok)
+    cleaned_tok = tok.lstrip("৳₹$")
+    ascii_tok = bn_to_ascii(cleaned_tok if cleaned_tok else tok)
     value = None
     if re.fullmatch(r"\d+(\.\d+)?", ascii_tok):
         value = float(ascii_tok)
@@ -136,7 +162,7 @@ def _base_number(tokens, i):
         i += 1
     else:
         return None, i
-    # multipliers: একশ/দুই শত/তিন হাজার
+    # multipliers: একশ/দুই শত/তিন হাজার/পাঁচ লাখ
     if i < len(tokens) and tokens[i] in ("শত", "শো"):
         value *= 100
         i += 1
@@ -144,11 +170,25 @@ def _base_number(tokens, i):
         if rest is not None and rest < 100:
             value += rest
             i = j
-    elif i < len(tokens) and tokens[i] == "হাজার":
+    elif i < len(tokens) and tokens[i] in ("হাজার", "হাজারে"):
         value *= 1000
         i += 1
         rest, j = _base_number(tokens, i)
         if rest is not None and rest < 1000:
+            value += rest
+            i = j
+    elif i < len(tokens) and tokens[i] in ("লাখ", "একলাখ", "লক্ষ"):
+        value *= 100000
+        i += 1
+        rest, j = _base_number(tokens, i)
+        if rest is not None and rest < 100000:
+            value += rest
+            i = j
+    elif i < len(tokens) and tokens[i] in ("কোটি", "এককোটি"):
+        value *= 10000000
+        i += 1
+        rest, j = _base_number(tokens, i)
+        if rest is not None and rest < 10000000:
             value += rest
             i = j
     return value, i
@@ -161,9 +201,22 @@ def parse_number_at(tokens, i):
     if i >= len(tokens):
         return None, i
     tok = tokens[i]
-    if tok.lower() == "half":
+
+    # Standalone currency signs like ৳ or ₹ or $
+    if tok in ("৳", "₹", "$"):
+        if i + 1 < len(tokens):
+            sub_val, next_idx = parse_number_at(tokens, i + 1)
+            if sub_val is not None:
+                return sub_val, next_idx
+        return None, i
+
+    clean_tok = tok.lstrip("৳₹$")
+    if not clean_tok:
+        return None, i
+
+    if clean_tok.lower() == "half":
         return 0.5, i + 1
-    if tok == "সাড়ে":
+    if clean_tok == "সাড়ে":
         base, j = _base_number(tokens, i + 1)
         if base is not None:
             if base >= 100:
@@ -174,27 +227,52 @@ def parse_number_at(tokens, i):
                     return base + unit / 2, j
             return base + 0.5, j
         return None, i
-    if tok in ("পৌনে", "পনে"):
+    if clean_tok in ("পৌনে", "পনে"):
         # পনে is the clipped spoken form of পৌনে (ASR writes it so, too)
         base, j = _base_number(tokens, i + 1)
         if base is not None:
             return base - 0.25, j
         return None, i
-    if tok == "সোয়া":
+    if clean_tok == "সোয়া":
         base, j = _base_number(tokens, i + 1)
         if base is not None:
             return base + 0.25, j
         return None, i
-    if tok in FRACTION_WORDS:
+    if clean_tok in FRACTION_WORDS:
         # দেড় হাজার = 1500, আড়াই হাজার = 2500, আধা হাজার = 500
-        if i + 1 < len(tokens) and tokens[i + 1] == "হাজার":
-            return FRACTION_WORDS[tok] * 1000, i + 2
-        return FRACTION_WORDS[tok], i + 1
-    if tok in ("একশ", "একশো", "শত"):
+        if i + 1 < len(tokens) and tokens[i + 1] in ("হাজার", "হাজারে"):
+            return FRACTION_WORDS[clean_tok] * 1000, i + 2
+        return FRACTION_WORDS[clean_tok], i + 1
+    if clean_tok in ("হাজার", "একহাজার", "হাজারখানি", "হাজারখানেক"):
+        rest, j = _base_number(tokens, i + 1)
+        if rest is not None and rest < 1000:
+            return 1000.0 + rest, j
+        return 1000.0, i + 1
+    if clean_tok in ("দেড়শো", "দেড়শো", "দেড়শ", "দেড়শ"):
         rest, j = _base_number(tokens, i + 1)
         if rest is not None and rest < 100:
-            return 100 + rest, j
+            return 150.0 + rest, j
+        return 150.0, i + 1
+    if clean_tok in ("আড়াইশো", "আড়াইশো", "আড়াইশ", "আড়াইশ"):
+        rest, j = _base_number(tokens, i + 1)
+        if rest is not None and rest < 100:
+            return 250.0 + rest, j
+        return 250.0, i + 1
+    if clean_tok in ("একশ", "একশো", "শত", "শো", "শ"):
+        rest, j = _base_number(tokens, i + 1)
+        if rest is not None and rest < 100:
+            return 100.0 + rest, j
         return 100.0, i + 1
+    if clean_tok in ("লাখ", "একলাখ", "লক্ষ"):
+        rest, j = _base_number(tokens, i + 1)
+        if rest is not None and rest < 100000:
+            return 100000.0 + rest, j
+        return 100000.0, i + 1
+    if clean_tok in ("কোটি", "এককোটি"):
+        rest, j = _base_number(tokens, i + 1)
+        if rest is not None and rest < 10000000:
+            return 10000000.0 + rest, j
+        return 10000000.0, i + 1
     return _base_number(tokens, i)
 
 
@@ -255,15 +333,23 @@ def format_speech_bn(text: str) -> str:
 
 def normalize_colon_artifacts(text: str) -> str:
     """Normalizes speech recognition colon artifacts like '1:10 টাকা দামের' -> '১০ টাকা দামের'
-    or '1:10' -> '1টা 10'."""
+    or '1:10' -> '1টা 10'.
+    
+    Special case: 'N:00' (N followed by ':00') is an ASR artifact for 'N টা' (N pieces),
+    since the speech model timestamps 'একটা' as '1:00'. Strip the ':00'.
+    """
     if not text:
         return ""
+    # 'N:00' -> 'N' (ASR artifact: 'একটা' spoken often appears as '1:00')
+    res = re.sub(r"([\d০-৯]+):0{1,2}(?=\s|$|[।,?!])", r"\1", text)
+    # Price context: '1:10 টাকা দামের' -> '10 টাকা দামের'
     res = re.sub(
         r"(?:^|\s)(?:[\d০-৯]+):([\d০-৯]+)\s*(টাকা\s*দামের|টাকার\s*দামের|টাকার|টাকা\s*মূল্যের|মূল্যের|দামের|দর|টাকা)",
         r" \1 \2 ",
-        text,
+        res,
         flags=re.IGNORECASE,
     )
+    # Remaining N:M -> 'Nটা M'
     res = re.sub(r"([\d০-৯]+):([\d০-৯]+)", r"\1টা \2", res)
     return re.sub(r"\s+", " ", res).strip()
 
@@ -274,6 +360,15 @@ def clean_spoken_punctuation(text: str) -> str:
         return ""
     res = re.sub(r"(?:^|\s)কমা(?=$|\s|[।,])", ", ", text, flags=re.IGNORECASE)
     res = re.sub(r"(?:^|\s)(?:দাঁড়ি|দাড়ি|ফুলস্টপ)(?=$|\s|[।,])", "। ", res, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", res).strip()
+
+
+def normalize_currency_artifacts(text: str) -> str:
+    """Normalizes currency symbols like '৳1000' -> '1000 টাকা'."""
+    if not text:
+        return ""
+    res = re.sub(r"[৳₹$]\s*([০-৯]+|\d+)", r" \1 টাকা ", text)
+    res = re.sub(r"([০-৯]+|\d+)\s*(?:tk|taka|rs)\b", r" \1 টাকা ", res, flags=re.IGNORECASE)
     return re.sub(r"\s+", " ", res).strip()
 
 
@@ -291,6 +386,7 @@ def normalize_asr(text: str) -> str:
         return ""
     res = clean_spoken_punctuation(text)
     res = normalize_colon_artifacts(res)
+    res = normalize_currency_artifacts(res)
     return re.sub(r"\s+", " ", res).strip()
 
 

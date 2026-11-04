@@ -26,3 +26,4 @@ echo Comam is running! You can now speak in Bengali.
 echo To stop, close the two terminal windows.
 echo ====================================================
 pause
+

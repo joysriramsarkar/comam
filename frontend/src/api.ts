@@ -95,3 +95,24 @@ export const api = {
 export const bnNum = (v: number | string): string =>
   String(v).replace(/[0-9]/g, (d) => "০১২৩৪৫৬৭৮৯"[Number(d)]);
 export const taka = (v: number): string => `${bnNum(v)} টাকা`;
+
+/** Converts English unit names to Bengali display labels */
+export const unitBn = (unit: string): string => {
+  const map: Record<string, string> = {
+    kg: "কেজি",
+    piece: "পিস",
+    litre: "লিটার",
+    liter: "লিটার",
+    gram: "গ্রাম",
+    g: "গ্রাম",
+    ml: "মিলি",
+    bag: "বস্তা",
+    box: "বাক্স",
+    pack: "প্যাকেট",
+    packet: "প্যাকেট",
+    bottle: "বোতল",
+    dozen: "ডজন",
+    pcs: "পিস",
+  };
+  return map[unit?.toLowerCase?.()] ?? unit;
+};

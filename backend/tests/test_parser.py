@@ -260,3 +260,47 @@ def test_stated_price_worth_despite_fuzzy_extras():
     d = parse_command(conn, "এক হাজার টাকার চাল")
     assert d["total"] == 1000
     assert abs(d["items"][0]["qty"] - 1000 / 55) < 0.01
+
+
+def test_affirmation_guard_without_pending_draft():
+    conn = make()
+    d = parse_command(conn, "হ্যাঁ, বিল করে দাও।")
+    assert d["kind"] == "unknown"
+    assert d.get("is_conversational") is True
+    assert "আগে" in d.get("reply", "") or "সেভ" in d.get("reply", "")
+    assert not d.get("items")
+    assert not d.get("unknown_items")
+
+
+def test_due_payment_with_colloquial_hazar_and_currency_symbol():
+    conn = make()
+    d1 = parse_command(conn, "সমিতা হাজার টাকা জমা দিলো।")
+    assert d1["kind"] == "due_payment"
+    assert d1["amount"] == 1000.0
+    assert d1["customer"]["name"] == "সুমিতা"
+
+    d2 = parse_command(conn, "সুমিতা ৳1000 জমা দিল।")
+    assert d2["kind"] == "due_payment"
+    assert d2["amount"] == 1000.0
+    assert d2["customer"]["name"] == "সুমিতা"
+
+
+def test_draft_summary_bn_uses_bengali_units():
+    conn = make()
+    d = parse_command(conn, "দুই কেজি আটা, তিনটি চা পাতা")
+    summary = draft_summary_bn(d)
+    assert "kg" not in summary.lower()
+    assert "piece" not in summary.lower()
+    assert "কেজি" in summary
+    assert "পিস" in summary
+
+
+def test_normalize_colon_time_artifact():
+    from app.bn import normalize_asr
+    norm = normalize_asr("তিন কেজি আটা চা পাতা 1:00 চাল আড়াই কেজি।")
+    assert "1:00" not in norm
+    conn = make()
+    d = parse_command(conn, norm)
+    assert len(d.get("items", [])) == 3
+    assert len(d.get("ambiguities", [])) == 0
+

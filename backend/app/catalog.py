@@ -8,6 +8,7 @@ import difflib
 import re
 import unicodedata
 
+from .bn import fmt_num, unit_to_bn
 from .db import get_conn, init_db
 
 
@@ -251,7 +252,7 @@ def quantity_warnings(items):
         qty, unit = float(i.get("qty") or 0), i.get("unit")
         if (unit in ("kg", "litre") and qty > 10) or (unit == "piece" and qty > 100):
             out.append(
-                f"{i['name_bn']} {qty:g} {unit} — পরিমাণটা বড়, ঠিক আছে কিনা দেখে নিন"
+                f"{i['name_bn']} {fmt_num(qty)} {unit_to_bn(unit)} — পরিমাণটা বড়, ঠিক আছে কিনা দেখে নিন"
             )
     return out
 
@@ -275,7 +276,7 @@ def quantity_alerts(items, raw_text=""):
         if not big:
             continue
         msg = (
-            f"{i['name_bn']} {qty:g} {unit} — পরিমাণটা অস্বাভাবিক বড়। "
+            f"{i['name_bn']} {fmt_num(qty)} {unit_to_bn(unit)} — পরিমাণটা অস্বাভাবিক বড়। "
             "ঠিক এটাই বলেছিলেন তো?"
         )
         if "পনেরো" in text and unit in ("kg", "litre"):

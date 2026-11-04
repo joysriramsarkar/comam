@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, bnNum, taka, type CommandResponse, type DraftItem, type Product } from "./api";
+import { api, bnNum, taka, unitBn, type CommandResponse, type DraftItem, type Product } from "./api";
 import { useVoiceInput } from "./sdk/useVoiceInput";
 import { speakBengali, stopSpeech } from "./sdk/speech-utils";
 
@@ -43,18 +43,25 @@ export default function App() {
     onTranscript: (t) => {
       setError("");
       const clean = t.trim().toLowerCase();
-      // If Comam asked "সব ঠিক আছে, বিল করবো?":
-      if (awaitingConfirmRef.current) {
-        if (/(হ্যাঁ|হ্যা|হাঁ|করো|কর|ঠিক|সেভ|yes|ok|okay)/i.test(clean)) {
+      // If Comam asked "সব ঠিক আছে, বিল করবো?" or draft is pending:
+      if (awaitingConfirmRef.current || resp?.draft_id) {
+        if (/(হ্যাঁ|হ্যা|হাঁ|করো|কর|ঠিক|সেভ|জমা|লিখে\s*রাখো|বিল\s*করে\s*দাও|yes|ok|okay)/i.test(clean)) {
           clearAutoConfirm();
+          voice.stop();
           void confirm();
           return;
         } else if (/(না|বাতিল|থাক|cancel|no)/i.test(clean)) {
           clearAutoConfirm();
+          voice.stop();
           void reject();
-          speakBengali("বিল বাতিল করা হলো।");
+          speakBengali(resp?.kind === "due_payment" ? "জমা বাতিল করা হলো।" : "বিল বাতিল করা হলো।");
           return;
         }
+      } else if (/(হ্যাঁ|বিল\s*করে\s*দাও|বিল\s*করো|ঠিক\s*আছে|সেভ\s*করো|জমা\s*করো|জমা\s*নাও)/i.test(clean)) {
+        // Already billed/saved! Don't create a fake bill for "হ্যাঁ"
+        voice.stop();
+        speakBengali("হিসাব আগেই সফলভাবে সেভ করা হয়েছে।");
+        return;
       }
 
       if (itemMode) {
@@ -82,6 +89,7 @@ export default function App() {
 
   const confirm = async (draftIdOverride?: number, itemsOverride?: DraftItem[]) => {
     clearAutoConfirm();
+    voice.stop();
     const targetId = draftIdOverride ?? resp?.draft_id;
     if (!targetId) return;
     stopSpeech();
@@ -91,8 +99,13 @@ export default function App() {
       if (resp?.kind === "sale" || resp?.kind === "purchase") {
         await api.updateItems(targetId, itemsToSave.map((i) => ({ product_id: i.product_id, qty: i.qty })), unknownAck);
       }
-      await api.confirm(targetId);
-      speakBengali("বিল সফলভাবে সেভ হয়েছে।");
+      const r = await api.confirm(targetId);
+      if (resp?.kind === "due_payment") {
+        const remaining = r?.result?.remaining_due !== undefined ? ` বাকি রইল ${taka(r.result.remaining_due)}।` : "";
+        speakBengali(`জমা সফলভাবে সেভ হয়েছে।${remaining}`);
+      } else {
+        speakBengali("বিল সফলভাবে সেভ হয়েছে।");
+      }
       setResp(null); setText(""); await refresh();
     } catch (e) { setError(String(e)); }
     setBusy(false);
@@ -107,17 +120,28 @@ export default function App() {
     setHeardText(q); // transcript read-back snapshot (MP-25)
     try {
       const r = await api.command(q);
+      if (r.kind === "confirmed") {
+        setResp(null);
+        setText("");
+        await refresh();
+        if (r.answer_speech_bn || r.answer_bn) {
+          speakBengali(r.answer_speech_bn || r.answer_bn || "");
+        }
+        setBusy(false);
+        return;
+      }
       setResp(r);
-      const isCleanSale =
-        r.kind === "sale" &&
+      const isCleanDraft =
+        (r.kind === "sale" || r.kind === "due_payment") &&
         !!r.draft_id &&
         !r.needs_clarification &&
         !r.draft?.unknown_items?.length &&
         !r.draft?.warnings?.length;
 
-      if (isCleanSale) {
+      if (isCleanDraft) {
         const baseSpeech = r.summary_speech_bn || r.summary_bn || "";
-        const toSpeak = `${baseSpeech}। সব ঠিক আছে, বিল করবো?`;
+        const promptWord = r.kind === "due_payment" ? "জমা লিখে রাখবো?" : "বিল করবো?";
+        const toSpeak = `${baseSpeech}। সব ঠিক আছে, ${promptWord}`;
         awaitingConfirmRef.current = true;
         setAwaitingConfirm(true);
         speakBengali(toSpeak, {
@@ -210,6 +234,7 @@ export default function App() {
 
   const reject = async () => {
     clearAutoConfirm();
+    voice.stop();
     stopSpeech();
     if (resp?.draft_id) await api.reject(resp.draft_id).catch(() => {});
     setResp(null);
@@ -320,21 +345,30 @@ export default function App() {
               🔊 শুনুন
             </button>
           </div>
-          <ul className="editlist">
-            {editItems.map((i, idx) => (
-              <li key={i.product_id}>
-                <span>{i.name_bn} — {taka(i.unit_price)}/{i.unit}</span>
-                <span className="qtyctl">
-                  <button onClick={() => setQty(idx, +(i.qty - (i.unit === "piece" ? 1 : 0.5)).toFixed(2))}>−</button>
-                  <b>{bnNum(i.qty)}</b>
-                  <button onClick={() => setQty(idx, +(i.qty + (i.unit === "piece" ? 1 : 0.5)).toFixed(2))}>+</button>
-                  <button onClick={() => setQty(idx, 0)}>✕</button>
-                </span>
-                <span>{taka(i.unit_price * i.qty)}</span>
-              </li>
-            ))}
-          </ul>
-          <div className="sum">মোট {taka(editItems.reduce((a, i) => a + i.unit_price * i.qty, 0))}</div>
+          {resp.draft.kind === "sale" && (
+            <>
+              <ul className="editlist">
+                {editItems.map((i, idx) => (
+                  <li key={i.product_id}>
+                    <span>{i.name_bn} — {taka(i.unit_price)}/{unitBn(i.unit)}</span>
+                    <span className="qtyctl">
+                      <button onClick={() => setQty(idx, +(i.qty - (i.unit === "piece" ? 1 : 0.5)).toFixed(2))}>−</button>
+                      <b>{bnNum(i.qty)} {unitBn(i.unit)}</b>
+                      <button onClick={() => setQty(idx, +(i.qty + (i.unit === "piece" ? 1 : 0.5)).toFixed(2))}>+</button>
+                      <button onClick={() => setQty(idx, 0)}>✕</button>
+                    </span>
+                    <span>{taka(i.unit_price * i.qty)}</span>
+                  </li>
+                ))}
+              </ul>
+              <div className="sum">মোট {taka(editItems.reduce((a, i) => a + i.unit_price * i.qty, 0))}</div>
+            </>
+          )}
+          {resp.draft.kind === "due_payment" && (
+            <div className="sum" style={{ marginTop: 8 }}>
+              জমা পরিমাণ: <b>{taka(resp.draft.amount || 0)}</b> ({resp.draft.customer?.name || resp.draft.customer_name}-এর হিসাবে)
+            </div>
+          )}
           {!!resp.draft.unknown_items?.length && (
             <>
               <p className="err">
@@ -366,13 +400,15 @@ export default function App() {
           )}
           {awaitingConfirm && (
             <div style={{ color: "#059669", background: "#ecfdf5", border: "1px solid #a7f3d0", padding: "8px 12px", borderRadius: 8, marginBottom: 10, fontSize: 13, fontWeight: 600 }}>
-              🎙️ কোমাম জিজ্ঞেস করছে: <b>"সব ঠিক আছে, বিল করবো?"</b><br/>
+              🎙️ কোমাম জিজ্ঞেস করছে: <b>"{resp.draft.kind === "due_payment" ? "সব ঠিক আছে, জমা লিখে রাখবো?" : "সব ঠিক আছে, বিল করবো?"}"</b><br/>
               👉 মুখে বলুন <b>"হ্যাঁ"</b> (বা অপেক্ষা করুন ৫ সেকেন্ডে একা সেভ হবে)
             </div>
           )}
           <div className="row">
             <button className="primary" onClick={() => confirm()} disabled={busy || alertPending || (!!resp.draft.unknown_items?.length && !unknownAck)}>
-              {awaitingConfirm ? "✓ হ্যাঁ, বিল করুন (বা মুখে বলুন 'হ্যাঁ')" : "✓ ঠিক আছে, সেভ করুন"}
+              {awaitingConfirm 
+                ? (resp.draft.kind === "due_payment" ? "✓ হ্যাঁ, জমা করুন (বা মুখে বলুন 'হ্যাঁ')" : "✓ হ্যাঁ, বিল করুন (বা মুখে বলুন 'হ্যাঁ')")
+                : (resp.draft.kind === "due_payment" ? "✓ ঠিক আছে, জমা সেভ করুন" : "✓ ঠিক আছে, সেভ করুন")}
             </button>
             <button onClick={reject}>✕ না, বাতিল</button>
           </div>
@@ -399,7 +435,7 @@ export default function App() {
           {products.map((p) => (
             <tr key={p.id}>
               <td>{p.name_bn}</td><td>{taka(p.price)}</td>
-              <td className={p.stock <= p.low_stock_threshold ? "low" : ""}>{bnNum(p.stock)} {p.unit}</td>
+              <td className={p.stock <= p.low_stock_threshold ? "low" : ""}>{bnNum(p.stock)} {unitBn(p.unit)}</td>
             </tr>
           ))}
         </tbody>

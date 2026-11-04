@@ -4,14 +4,17 @@ Produces the SAME draft shape as the Muse Spark tool-calling path, so the
 confirm flow does not care which engine understood the sentence.
 Ambiguity is reported, never guessed.
 """
+import json
 import re
 
 from .bn import (
     UNITS,
     conflicting_amounts,
+    fmt_num,
     fmt_taka,
     find_number_phrases,
     parse_number_at,
+    unit_to_bn,
 )
 from .catalog import (
     extract_new_customer_name,
@@ -263,6 +266,22 @@ def parse_command(conn, text):
     t = normalize(text)
     draft = {"raw": text, "ambiguities": []}
 
+    # Conversational affirmation/confirmation guard (e.g. 'হ্যাঁ, বিল করে দাও', 'হ্যাঁ করো', 'বিল করো', 'জমা লিখে রাখো')
+    affirm_pattern = r"^(?:হ্যাঁ|হাঁ|হ্যা|হুম|ঠিক\s*আছে|আচ্ছা)?[\s,।!?]*(?:বিল\s*করে\s*দাও|বিল\s*করো|বিল\s*করুন|জমা\s*করো|জমা\s*করুন|জমা\s*লিখে\s*রাখো|জমা\s*নাও|সেভ\s*করো|সেভ\s*করুন|হয়ে\s*গেছে|হয়ে\s*গেছে|করো|করুন|yes|ok|okay)?[\s,।!?]*$"
+    if re.match(affirm_pattern, t.strip(), re.IGNORECASE) and not find_number_phrases(text):
+        pending = conn.execute(
+            "SELECT id, payload FROM drafts WHERE status='pending' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if pending:
+            p_draft = json.loads(pending["payload"])
+            p_draft["pending_draft_id"] = pending["id"]
+            p_draft["auto_confirmed"] = True
+            return p_draft
+        draft["kind"] = "unknown"
+        draft["is_conversational"] = True
+        draft["reply"] = "বিল বা জমা আগেই সেভ করা হয়েছে — নতুন হিসাবের জন্য বলুন।"
+        return draft
+
     if "বাতিল" in t or "undo" in t:
         draft["kind"] = "undo"
         return draft
@@ -281,7 +300,7 @@ def parse_command(conn, text):
             # ledger creates the customer when the draft is confirmed.
             draft["customer_name"] = new_name
 
-    # due payment: 'রহিমদা ২০০ টাকা জমা দিলেন'
+    # due payment: 'রহিমদা ২০০ টাকা জমা দিলেন', 'সুমিতা হাজার টাকা জমা দিলো'
     if "জমা" in t and (customer is not None or draft.get("customer_name")):
         phrases = find_number_phrases(text)
         if phrases:
@@ -297,6 +316,11 @@ def parse_command(conn, text):
                 draft["amount_options"] = amounts
                 return draft
             draft["amount"] = phrases[0][0]
+            return draft
+        else:
+            c_name = customer["name"] if customer else draft.get("customer_name")
+            draft["kind"] = "unknown"
+            draft["reply"] = f"{c_name} কত টাকা জমা দিয়েছেন? টাকার অঙ্ক বলুন।"
             return draft
 
     # due query: 'সুমিতার কত বাকি', 'রহিমের কত টাকা বাকি', 'লক্ষণ সরকারের বাকি কত?', 'কার কার কত টাকা বাকি আছে?'
@@ -420,6 +444,14 @@ def parse_command(conn, text):
             continue
         consume(s.strip())
     draft["items"] = items
+    if not items and unknown_items:
+        valid_unknown = []
+        for u in unknown_items:
+            clean_u = re.sub(r"(হ্যাঁ|হাঁ|হ্যা|বিল|জমা|টাকা|করে|দাও|করো|করুন|দিন|দেন|দিল|দিলো|না|চাই|রাখো)", "", u["text"]).strip(" ,।")
+            if len(clean_u) >= 2:
+                valid_unknown.append(u)
+        unknown_items = valid_unknown
+
     if unknown_items:
         draft["unknown_items"] = unknown_items
     warns = quantity_warnings(items)
@@ -428,6 +460,8 @@ def parse_command(conn, text):
     draft["total"] = round(sum(i["line_total"] for i in items), 2)
     if not items and not unknown_items:
         draft["kind"] = "unknown"
+        if not draft.get("reply"):
+            draft["reply"] = "বুঝতে পারিনি — পণ্যের নাম ও পরিমাণ বলুন।"
     return draft
 
 
@@ -436,7 +470,7 @@ def draft_summary_bn(draft):
     kind = draft.get("kind")
     if kind in ("sale", "purchase"):
         parts = [
-            f"{i['name_bn']} {i['qty']:g} {i['unit']} — {fmt_taka(i['line_total'])}"
+            f"{i['name_bn']} {fmt_num(i['qty'])} {unit_to_bn(i.get('unit', ''))} — {fmt_taka(i['line_total'])}"
             for i in draft.get("items", [])
         ]
         pay_bn = {"due": "বাকি", "upi": "ইউপিআই", "cash": "নগদ"}.get(

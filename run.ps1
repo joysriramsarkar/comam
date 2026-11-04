@@ -19,3 +19,4 @@ Start-Sleep -Seconds 2
 Start-Process "http://localhost:5173"
 
 Write-Host "`nAll set! Browser opened at http://localhost:5173" -ForegroundColor Yellow
+

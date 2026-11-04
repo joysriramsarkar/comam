@@ -19,7 +19,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .asr.base import TranscriptionError
 from .asr.muse import biasing_enabled, ffmpeg_available
-from .bn import fmt_num, fmt_taka, format_speech_bn, normalize_asr
+from .bn import fmt_num, fmt_taka, format_speech_bn, normalize_asr, unit_to_bn
 from .catalog import quantity_alerts
 from .db import get_conn, init_db
 from .ledger import Ledger
@@ -95,7 +95,7 @@ def _report_answer(report, led: Ledger, draft: dict = None):
         sold = data["sold_qty"]
         tot = data["sales_total"]
         stock = data["current_stock"]
-        unit = data.get("unit", "")
+        unit = unit_to_bn(data.get("unit", ""))
         ans = f"{data['name_bn']} আজ {fmt_num(sold)} {unit} বিক্রি হয়েছে (মোট {fmt_taka(tot)})। বর্তমান স্টক: {fmt_num(stock)} {unit}।"
         return ans, data
     if report == "sales_summary":
@@ -114,7 +114,7 @@ def _report_answer(report, led: Ledger, draft: dict = None):
         items = led.low_stock()
         if not items:
             return "সব পণ্যের স্টক ঠিকঠাক আছে।", {"low_stock": []}
-        names = ", ".join(f"{i['name_bn']} ({fmt_num(i['stock'])} {i['unit']})" for i in items)
+        names = ", ".join(f"{i['name_bn']} ({fmt_num(i['stock'])} {unit_to_bn(i['unit'])})" for i in items)
         return f"শেষ হয়ে আসছে: {names}।", {"low_stock": items}
     if report == "top_products":
         top = led.top_products(7)
@@ -174,7 +174,7 @@ def command(body: CommandIn):
     # Fast deterministic parser first (< 30ms, no remote LLM latency)
     draft = parse_command(conn(), text)
     draft["engine"] = "local"
-    if draft.get("kind") == "unknown" and meta.enabled:
+    if draft.get("kind") == "unknown" and not draft.get("is_conversational") and meta.enabled:
         try:
             llm_draft = meta.understand(conn(), text)
             if llm_draft and llm_draft.get("kind") != "unknown":
@@ -191,6 +191,28 @@ def command(body: CommandIn):
         draft["customer"] = None
         draft.pop("customer_name", None)
         draft.pop("customer_not_found", None)
+
+    if draft.get("auto_confirmed") and draft.get("pending_draft_id"):
+        pending_id = draft["pending_draft_id"]
+        try:
+            with _draft_lock:
+                conf_res = _confirm_draft_locked(pending_id)
+            if draft.get("kind") == "due_payment":
+                rem = conf_res.get("result", {}).get("remaining_due")
+                rem_str = f" বাকি রইল {fmt_taka(rem)}।" if rem is not None else ""
+                msg = f"জমা সফলভাবে সেভ হয়েছে।{rem_str}"
+            else:
+                msg = "বিল সফলভাবে সেভ হয়েছে।"
+            speech = format_speech_bn(msg)
+            return {
+                "kind": "confirmed",
+                "answer_bn": msg,
+                "answer_speech_bn": speech,
+                "draft": draft,
+                "confirmed_draft_id": pending_id,
+            }
+        except Exception:
+            pass
 
     kind = draft["kind"]
     if kind == "due_query":
@@ -319,7 +341,7 @@ def _confirm_draft_locked(draft_id: int):
                 if p is not None and qty > float(p["stock"]):
                     raise HTTPException(
                         400,
-                        f"স্টকে {p['name_bn']} আছে {fmt_num(p['stock'])} {p['unit']}"
+                        f"স্টকে {p['name_bn']} আছে {fmt_num(p['stock'])} {unit_to_bn(p['unit'])}"
                         " — এর বেশি বিক্রি হবে না",
                     )
             try:

@@ -10,3 +10,7 @@ node_modules/
 dist/
 .DS_Store
 .pytest_cache/
+temp_render/
+WhatsApp Video*.mp4
+demo.mp4
+
