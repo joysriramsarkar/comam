@@ -1,0 +1,12 @@
+{
+  "name": "comam",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Comam AI - Voice assistant for retail shops in Bengali",
+  "scripts": {
+    "dev": "npm --prefix frontend run dev",
+    "frontend": "npm --prefix frontend run dev",
+    "backend": "cd backend && .venv\\Scripts\\uvicorn app.main:app --port 8000 --reload",
+    "start": "start.bat"
+  }
+}
