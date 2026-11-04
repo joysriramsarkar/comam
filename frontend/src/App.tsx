@@ -19,7 +19,8 @@ export default function App() {
   const [daily, setDaily] = useState<{ date: string; count: number; total: number }[]>([]);
   const [editItems, setEditItems] = useState<DraftItem[]>([]);
   const [unknownAck, setUnknownAck] = useState(false);
-  const [autoConfirming, setAutoConfirming] = useState(false);
+  const [awaitingConfirm, setAwaitingConfirm] = useState(false);
+  const awaitingConfirmRef = useRef(false);
   const autoConfirmTimerRef = useRef<number | null>(null);
 
   const clearAutoConfirm = () => {
@@ -27,7 +28,8 @@ export default function App() {
       window.clearTimeout(autoConfirmTimerRef.current);
       autoConfirmTimerRef.current = null;
     }
-    setAutoConfirming(false);
+    awaitingConfirmRef.current = false;
+    setAwaitingConfirm(false);
   };
 
   const sendRef = useRef<(textOverride?: string) => Promise<void>>(async () => {});
@@ -40,6 +42,21 @@ export default function App() {
     autoStopSilenceMs: 1000,
     onTranscript: (t) => {
       setError("");
+      const clean = t.trim().toLowerCase();
+      // If Comam asked "সব ঠিক আছে, বিল করবো?":
+      if (awaitingConfirmRef.current) {
+        if (/(হ্যাঁ|হ্যা|হাঁ|করো|কর|ঠিক|সেভ|yes|ok|okay)/i.test(clean)) {
+          clearAutoConfirm();
+          void confirm();
+          return;
+        } else if (/(না|বাতিল|থাক|cancel|no)/i.test(clean)) {
+          clearAutoConfirm();
+          void reject();
+          speakBengali("বিল বাতিল করা হলো।");
+          return;
+        }
+      }
+
       if (itemMode) {
         setText((prev) => (prev.trim() ? `${prev.replace(/[।,]?\s*$/, "")}, ${t}` : t));
       } else {
@@ -100,18 +117,32 @@ export default function App() {
 
       if (isCleanSale) {
         const baseSpeech = r.summary_speech_bn || r.summary_bn || "";
-        const toSpeak = `${baseSpeech}। সব ঠিক আছে, এবার বিল করছি।`;
-        setAutoConfirming(true);
+        const toSpeak = `${baseSpeech}। সব ঠিক আছে, বিল করবো?`;
+        awaitingConfirmRef.current = true;
+        setAwaitingConfirm(true);
         speakBengali(toSpeak, {
           onEnd: () => {
+            // Automatically open microphone to listen for "হ্যাঁ" or "না"
+            try {
+              voice.start();
+            } catch {
+              /* fallback */
+            }
+            // 5s fallback safety: auto-confirms if user stays silent
             autoConfirmTimerRef.current = window.setTimeout(() => {
-              void confirm(r.draft_id, r.draft?.items);
-            }, 800);
+              if (awaitingConfirmRef.current) {
+                clearAutoConfirm();
+                void confirm(r.draft_id, r.draft?.items);
+              }
+            }, 5000);
           },
           onError: () => {
             autoConfirmTimerRef.current = window.setTimeout(() => {
-              void confirm(r.draft_id, r.draft?.items);
-            }, 1000);
+              if (awaitingConfirmRef.current) {
+                clearAutoConfirm();
+                void confirm(r.draft_id, r.draft?.items);
+              }
+            }, 3000);
           },
         });
       } else {
@@ -333,16 +364,17 @@ export default function App() {
               </div>
             </div>
           )}
-          {autoConfirming && (
-            <div style={{ color: "#059669", background: "#ecfdf5", border: "1px solid #a7f3d0", padding: "6px 12px", borderRadius: 6, marginBottom: 8, fontSize: 13, fontWeight: 600 }}>
-              ⚡ কোমাম নিজে থেকেই বিল সেভ করছে... বাতিল করতে "বাতিল" চাপুন।
+          {awaitingConfirm && (
+            <div style={{ color: "#059669", background: "#ecfdf5", border: "1px solid #a7f3d0", padding: "8px 12px", borderRadius: 8, marginBottom: 10, fontSize: 13, fontWeight: 600 }}>
+              🎙️ কোমাম জিজ্ঞেস করছে: <b>"সব ঠিক আছে, বিল করবো?"</b><br/>
+              👉 মুখে বলুন <b>"হ্যাঁ"</b> (বা অপেক্ষা করুন ৫ সেকেন্ডে একা সেভ হবে)
             </div>
           )}
           <div className="row">
             <button className="primary" onClick={() => confirm()} disabled={busy || alertPending || (!!resp.draft.unknown_items?.length && !unknownAck)}>
-              {autoConfirming ? "✓ সেভ হচ্ছে… (বা এখনই চাপুন)" : "✓ ঠিক আছে, সেভ করুন"}
+              {awaitingConfirm ? "✓ হ্যাঁ, বিল করুন (বা মুখে বলুন 'হ্যাঁ')" : "✓ ঠিক আছে, সেভ করুন"}
             </button>
-            <button onClick={reject}>বাতিল</button>
+            <button onClick={reject}>✕ না, বাতিল</button>
           </div>
         </div>
       )}
