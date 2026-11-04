@@ -171,16 +171,17 @@ def command(body: CommandIn):
     text = normalize_asr(body.text.strip())
     if not text:
         raise HTTPException(400, "empty command")
-    draft = None
-    if meta.enabled:
+    # Fast deterministic parser first (< 30ms, no remote LLM latency)
+    draft = parse_command(conn(), text)
+    draft["engine"] = "local"
+    if draft.get("kind") == "unknown" and meta.enabled:
         try:
-            draft = meta.understand(conn(), text)
-            draft.setdefault("engine", "spark")
+            llm_draft = meta.understand(conn(), text)
+            if llm_draft and llm_draft.get("kind") != "unknown":
+                draft = llm_draft
+                draft.setdefault("engine", "spark")
         except Exception:
-            draft = None  # fall back to the deterministic parser
-    if draft is None:
-        draft = parse_command(conn(), text)
-        draft["engine"] = "local"
+            pass
 
     # Enforce general due query if phrase clearly asks for all dues across the shop
     if ("বাকি" in text or "বকেয়া" in text or "দেনা" in text) and re.search(

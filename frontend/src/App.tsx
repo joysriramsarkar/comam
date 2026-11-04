@@ -19,6 +19,16 @@ export default function App() {
   const [daily, setDaily] = useState<{ date: string; count: number; total: number }[]>([]);
   const [editItems, setEditItems] = useState<DraftItem[]>([]);
   const [unknownAck, setUnknownAck] = useState(false);
+  const [autoConfirming, setAutoConfirming] = useState(false);
+  const autoConfirmTimerRef = useRef<number | null>(null);
+
+  const clearAutoConfirm = () => {
+    if (autoConfirmTimerRef.current) {
+      window.clearTimeout(autoConfirmTimerRef.current);
+      autoConfirmTimerRef.current = null;
+    }
+    setAutoConfirming(false);
+  };
 
   const sendRef = useRef<(textOverride?: string) => Promise<void>>(async () => {});
 
@@ -27,7 +37,7 @@ export default function App() {
   const voice = useVoiceInput({
     transcribe: (blob, filename) => api.transcribe(blob, filename),
     enablePreview: true,
-    autoStopSilenceMs: 1400,
+    autoStopSilenceMs: 1000,
     onTranscript: (t) => {
       setError("");
       if (itemMode) {
@@ -53,18 +63,62 @@ export default function App() {
 
   useEffect(() => { refresh().catch(() => setError("সার্ভারে সংযোগ যাচ্ছে না")); }, [refresh]);
 
+  const confirm = async (draftIdOverride?: number, itemsOverride?: DraftItem[]) => {
+    clearAutoConfirm();
+    const targetId = draftIdOverride ?? resp?.draft_id;
+    if (!targetId) return;
+    stopSpeech();
+    setBusy(true);
+    try {
+      const itemsToSave = itemsOverride ?? editItems;
+      if (resp?.kind === "sale" || resp?.kind === "purchase") {
+        await api.updateItems(targetId, itemsToSave.map((i) => ({ product_id: i.product_id, qty: i.qty })), unknownAck);
+      }
+      await api.confirm(targetId);
+      speakBengali("বিল সফলভাবে সেভ হয়েছে।");
+      setResp(null); setText(""); await refresh();
+    } catch (e) { setError(String(e)); }
+    setBusy(false);
+  };
+
   const send = async (textOverride?: string) => {
     const q = (textOverride !== undefined ? textOverride : text).trim();
     if (!q) return;
+    clearAutoConfirm();
     stopSpeech();
     setBusy(true); setError("");
     setHeardText(q); // transcript read-back snapshot (MP-25)
     try {
       const r = await api.command(q);
       setResp(r);
-      const toSpeak = r.answer_speech_bn || r.summary_speech_bn || r.answer_bn || r.summary_bn;
-      if (toSpeak) {
-        speakBengali(toSpeak);
+      const isCleanSale =
+        r.kind === "sale" &&
+        !!r.draft_id &&
+        !r.needs_clarification &&
+        !r.draft?.unknown_items?.length &&
+        !r.draft?.warnings?.length;
+
+      if (isCleanSale) {
+        const baseSpeech = r.summary_speech_bn || r.summary_bn || "";
+        const toSpeak = `${baseSpeech}। সব ঠিক আছে, এবার বিল করছি।`;
+        setAutoConfirming(true);
+        speakBengali(toSpeak, {
+          onEnd: () => {
+            autoConfirmTimerRef.current = window.setTimeout(() => {
+              void confirm(r.draft_id, r.draft?.items);
+            }, 800);
+          },
+          onError: () => {
+            autoConfirmTimerRef.current = window.setTimeout(() => {
+              void confirm(r.draft_id, r.draft?.items);
+            }, 1000);
+          },
+        });
+      } else {
+        const toSpeak = r.answer_speech_bn || r.summary_speech_bn || r.answer_bn || r.summary_bn;
+        if (toSpeak) {
+          speakBengali(toSpeak);
+        }
       }
       if (r.kind === "report" || r.kind === "due_query") setText("");
     } catch (e) { setError(String(e)); }
@@ -73,11 +127,13 @@ export default function App() {
   sendRef.current = send;
 
   const handleMicClick = () => {
+    clearAutoConfirm();
     stopSpeech();
     voice.toggle();
   };
 
   const ackAlerts = async () => {
+    clearAutoConfirm();
     if (!resp?.draft_id) return;
     setBusy(true);
     try {
@@ -94,24 +150,8 @@ export default function App() {
     setBusy(false);
   };
 
-  const confirm = async () => {
-    if (!resp?.draft_id) return;
-    stopSpeech();
-    setBusy(true);
-    try {
-      // Only sale/purchase drafts have editable items — due payments and
-      // undos confirm directly (the items endpoint rejects other kinds).
-      if (resp.kind === "sale" || resp.kind === "purchase") {
-        await api.updateItems(resp.draft_id, editItems.map((i) => ({ product_id: i.product_id, qty: i.qty })), unknownAck);
-      }
-      await api.confirm(resp.draft_id);
-      speakBengali("বিল সফলভাবে সেভ হয়েছে।");
-      setResp(null); setText(""); await refresh();
-    } catch (e) { setError(String(e)); }
-    setBusy(false);
-  };
-
   const resolveDraft = async (productId: number, ambiguityIndex: number) => {
+    clearAutoConfirm();
     if (!resp?.draft_id) return;
     stopSpeech();
     setBusy(true);
@@ -132,10 +172,13 @@ export default function App() {
     setBusy(false);
   };
 
-  const setQty = (idx: number, qty: number) =>
+  const setQty = (idx: number, qty: number) => {
+    clearAutoConfirm();
     setEditItems((items) => items.map((it, i) => (i === idx ? { ...it, qty: Math.max(0, qty) } : it)));
+  };
 
   const reject = async () => {
+    clearAutoConfirm();
     stopSpeech();
     if (resp?.draft_id) await api.reject(resp.draft_id).catch(() => {});
     setResp(null);
@@ -290,8 +333,15 @@ export default function App() {
               </div>
             </div>
           )}
+          {autoConfirming && (
+            <div style={{ color: "#059669", background: "#ecfdf5", border: "1px solid #a7f3d0", padding: "6px 12px", borderRadius: 6, marginBottom: 8, fontSize: 13, fontWeight: 600 }}>
+              ⚡ কোমাম নিজে থেকেই বিল সেভ করছে... বাতিল করতে "বাতিল" চাপুন।
+            </div>
+          )}
           <div className="row">
-            <button className="primary" onClick={confirm} disabled={busy || alertPending || (!!resp.draft.unknown_items?.length && !unknownAck)}>✓ ঠিক আছে, সেভ করুন</button>
+            <button className="primary" onClick={() => confirm()} disabled={busy || alertPending || (!!resp.draft.unknown_items?.length && !unknownAck)}>
+              {autoConfirming ? "✓ সেভ হচ্ছে… (বা এখনই চাপুন)" : "✓ ঠিক আছে, সেভ করুন"}
+            </button>
             <button onClick={reject}>বাতিল</button>
           </div>
         </div>

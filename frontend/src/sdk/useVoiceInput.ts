@@ -133,7 +133,7 @@ export function useVoiceInput(options: UseVoiceInputOptions) {
   /** True when the final text came from Web Speech, not server ASR. */
   const [degraded, setDegraded] = useState(false);
 
-  const autoStopSilenceMs = options.autoStopSilenceMs ?? 1400;
+  const autoStopSilenceMs = options.autoStopSilenceMs ?? 1000;
   const speechDetectedRef = useRef(false);
   const silenceMsRef = useRef(0);
   const autoStoppingRef = useRef(false);
@@ -246,7 +246,7 @@ export function useVoiceInput(options: UseVoiceInputOptions) {
             } else if (speechDetectedRef.current) {
               silenceMsRef.current += 100;
               const elapsed = Date.now() - startedAtRef.current;
-              if (silenceMsRef.current >= autoStopSilenceMs && elapsed >= 1000) {
+              if (silenceMsRef.current >= autoStopSilenceMs && elapsed >= 800) {
                 autoStoppingRef.current = true;
                 if (recorderRef.current?.state === "recording") {
                   recorderRef.current.stop();
