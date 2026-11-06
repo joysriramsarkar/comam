@@ -184,21 +184,6 @@ TOOL_SCHEMAS = [
             },
         },
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "create_customer",
-            "description": "Add a new customer to the database.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string"},
-                    "phone": {"type": "string"},
-                },
-                "required": ["name"],
-            },
-        },
-    },
 ]
 
 
@@ -291,9 +276,27 @@ class DraftSession:
         return draft
 
 
+def _days(value, default, max_days=365):
+    """Tool `days` arguments come from the model — clamp, never trust."""
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(days, max_days))
+
+
 def dispatch(session: DraftSession, name: str, args: dict):
     """Execute one whitelisted tool call against the draft session / DB
     (read-only queries hit the DB; writes only touch the draft)."""
+    try:
+        return _dispatch(session, name, args)
+    except Exception as e:
+        # One malformed tool call must not kill the whole understanding
+        # turn — hand the error back to the model so it can correct.
+        return {"error": f"{e.__class__.__name__}: {e}"[:200]}
+
+
+def _dispatch(session: DraftSession, name: str, args: dict):
     conn = session.conn
     led = Ledger(conn)
     if name == "search_product":
@@ -403,13 +406,13 @@ def dispatch(session: DraftSession, name: str, args: dict):
         return {"error": "customer_id or customer_name required"}
     if name == "get_sales_summary":
         session.report = "sales_summary"
-        return led.sales_summary(int(args.get("days", 1)))
+        return led.sales_summary(_days(args.get("days"), 1))
     if name == "get_low_stock":
         session.report = "low_stock"
         return {"low_stock": led.low_stock()}
     if name == "top_products":
         session.report = "top_products"
-        return {"top": led.top_products(int(args.get("days", 7)))}
+        return {"top": led.top_products(_days(args.get("days"), 7))}
     if name == "get_week_compare":
         session.report = "week_compare"
         return led.week_compare()
@@ -430,11 +433,7 @@ def dispatch(session: DraftSession, name: str, args: dict):
         p = conn.execute("SELECT id, name_bn, unit, stock FROM products WHERE id=?", (args["product_id"],)).fetchone()
         if p:
             session.target_product = {"id": p["id"], "name_bn": p["name_bn"], "unit": p["unit"]}
-        return led.product_sales(args["product_id"], int(args.get("days", 1)))
-    if name == "create_customer":
-        c = led.create_customer(args["name"], args.get("phone", ""))
-        session.customer = {"id": c["id"], "name": c["name"]}
-        return {"customer_id": c["id"], "name": c["name"]}
+        return led.product_sales(args["product_id"], _days(args.get("days"), 1))
     return {"error": f"tool not whitelisted: {name}"}
 
 

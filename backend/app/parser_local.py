@@ -27,6 +27,11 @@ from .catalog import (
 
 PIECE_WORDS = ("টে", "টা", "টি", "খানা", "পিস")
 
+# A spoken/typed "হ্যাঁ" only auto-confirms a pending draft NO older than
+# this many minutes — an abandoned draft from hours ago must never be
+# committed by a later, unrelated affirmation.
+AUTO_CONFIRM_WINDOW_MIN = 15
+
 
 def _split_items(text):
     parts = re.split(r"[,،]| এবং | আর | ও ", text)
@@ -270,7 +275,10 @@ def parse_command(conn, text):
     affirm_pattern = r"^(?:হ্যাঁ|হাঁ|হ্যা|হুম|ঠিক\s*আছে|আচ্ছা)?[\s,।!?]*(?:বিল\s*করে\s*দাও|বিল\s*করো|বিল\s*করুন|জমা\s*করো|জমা\s*করুন|জমা\s*লিখে\s*রাখো|জমা\s*নাও|সেভ\s*করো|সেভ\s*করুন|হয়ে\s*গেছে|হয়ে\s*গেছে|করো|করুন|yes|ok|okay)?[\s,।!?]*$"
     if re.match(affirm_pattern, t.strip(), re.IGNORECASE) and not find_number_phrases(text):
         pending = conn.execute(
-            "SELECT id, payload FROM drafts WHERE status='pending' ORDER BY id DESC LIMIT 1"
+            "SELECT id, payload FROM drafts WHERE status='pending'"
+            " AND datetime(created_at) >= datetime('now', 'localtime', ?)"
+            " ORDER BY id DESC LIMIT 1",
+            (f"-{AUTO_CONFIRM_WINDOW_MIN} minutes",),
         ).fetchone()
         if pending:
             p_draft = json.loads(pending["payload"])
@@ -279,7 +287,9 @@ def parse_command(conn, text):
             return p_draft
         draft["kind"] = "unknown"
         draft["is_conversational"] = True
-        draft["reply"] = "বিল বা জমা আগেই সেভ করা হয়েছে — নতুন হিসাবের জন্য বলুন।"
+        draft["reply"] = (
+            "বিচারাধীন কোনো বিল নেই — নতুন হিসাব করতে পণ্য ও পরিমাণ বলুন।"
+        )
         return draft
 
     if "বাতিল" in t or "undo" in t:

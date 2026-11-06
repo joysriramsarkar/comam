@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, bnNum, taka, unitBn, type CommandResponse, type DraftItem, type Product } from "./api";
+import { api, bnNum, errMsg, taka, unitBn, type CommandResponse, type DraftItem, type Product } from "./api";
 import { useVoiceInput } from "./sdk/useVoiceInput";
 import { speakBengali, stopSpeech } from "./sdk/speech-utils";
+import { confirmIntent } from "./sdk/confirm-intent";
 
 interface Summary { sales_total: number; sales_count: number; est_profit: number }
 interface Customer { id: number; name: string; due: number }
@@ -21,12 +22,14 @@ export default function App() {
   const [unknownAck, setUnknownAck] = useState(false);
   const [awaitingConfirm, setAwaitingConfirm] = useState(false);
   const awaitingConfirmRef = useRef(false);
-  const autoConfirmTimerRef = useRef<number | null>(null);
+  // If the shopkeeper never answers the confirmation question, close the
+  // mic after a grace period — silent drafts must NEVER auto-confirm.
+  const awaitingStopTimerRef = useRef<number | null>(null);
 
   const clearAutoConfirm = () => {
-    if (autoConfirmTimerRef.current) {
-      window.clearTimeout(autoConfirmTimerRef.current);
-      autoConfirmTimerRef.current = null;
+    if (awaitingStopTimerRef.current) {
+      window.clearTimeout(awaitingStopTimerRef.current);
+      awaitingStopTimerRef.current = null;
     }
     awaitingConfirmRef.current = false;
     setAwaitingConfirm(false);
@@ -43,21 +46,29 @@ export default function App() {
     onTranscript: (t) => {
       setError("");
       const clean = t.trim().toLowerCase();
-      // If Comam asked "সব ঠিক আছে, বিল করবো?" or draft is pending:
+      // If Comam asked "সব ঠিক আছে, বিল করবো?" and a draft is pending:
       if (awaitingConfirmRef.current || resp?.draft_id) {
-        if (/(হ্যাঁ|হ্যা|হাঁ|করো|কর|ঠিক|সেভ|জমা|লিখে\s*রাখো|বিল\s*করে\s*দাও|yes|ok|okay)/i.test(clean)) {
+        const intent = confirmIntent(clean);
+        if (intent === "yes") {
           clearAutoConfirm();
           voice.stop();
           void confirm();
           return;
-        } else if (/(না|বাতিল|থাক|cancel|no)/i.test(clean)) {
+        } else if (intent === "no") {
           clearAutoConfirm();
           voice.stop();
           void reject();
           speakBengali(resp?.kind === "due_payment" ? "জমা বাতিল করা হলো।" : "বিল বাতিল করা হলো।");
           return;
+        } else if (awaitingConfirmRef.current) {
+          // Asked a direct question and got neither হ্যাঁ nor না:
+          // say so and keep listening — do NOT bill, do NOT start a
+          // new command from the stray speech.
+          speakBengali("হ্যাঁ বা না বলুন।");
+          return;
         }
-      } else if (/(হ্যাঁ|বিল\s*করে\s*দাও|বিল\s*করো|ঠিক\s*আছে|সেভ\s*করো|জমা\s*করো|জমা\s*নাও)/i.test(clean)) {
+        // Not awaiting an answer: fall through and treat it as a new command.
+      } else if (confirmIntent(clean) === "yes") {
         // Already billed/saved! Don't create a fake bill for "হ্যাঁ"
         voice.stop();
         speakBengali("হিসাব আগেই সফলভাবে সেভ করা হয়েছে।");
@@ -107,7 +118,7 @@ export default function App() {
         speakBengali("বিল সফলভাবে সেভ হয়েছে।");
       }
       setResp(null); setText(""); await refresh();
-    } catch (e) { setError(String(e)); }
+    } catch (e) { setError(errMsg(e)); }
     setBusy(false);
   };
 
@@ -146,27 +157,20 @@ export default function App() {
         setAwaitingConfirm(true);
         speakBengali(toSpeak, {
           onEnd: () => {
-            // Automatically open microphone to listen for "হ্যাঁ" or "না"
+            // Automatically open microphone to listen for "হ্যাঁ" or "না".
+            // Speech — and ONLY speech or an explicit button — confirms.
+            // Silence never bills.
             try {
               voice.start();
             } catch {
-              /* fallback */
+              /* mic unavailable — the on-screen buttons still work */
             }
-            // 5s fallback safety: auto-confirms if user stays silent
-            autoConfirmTimerRef.current = window.setTimeout(() => {
-              if (awaitingConfirmRef.current) {
-                clearAutoConfirm();
-                void confirm(r.draft_id, r.draft?.items);
-              }
-            }, 5000);
-          },
-          onError: () => {
-            autoConfirmTimerRef.current = window.setTimeout(() => {
-              if (awaitingConfirmRef.current) {
-                clearAutoConfirm();
-                void confirm(r.draft_id, r.draft?.items);
-              }
-            }, 3000);
+            // Grace period: if nobody answers, stop listening but keep
+            // the draft pending on screen. It is never auto-confirmed.
+            awaitingStopTimerRef.current = window.setTimeout(() => {
+              awaitingStopTimerRef.current = null;
+              voice.stop();
+            }, 15000);
           },
         });
       } else {
@@ -176,7 +180,7 @@ export default function App() {
         }
       }
       if (r.kind === "report" || r.kind === "due_query") setText("");
-    } catch (e) { setError(String(e)); }
+    } catch (e) { setError(errMsg(e)); }
     setBusy(false);
   };
   sendRef.current = send;
@@ -201,7 +205,7 @@ export default function App() {
           (r.draft?.ambiguities?.length ?? 0) > 0 ||
           !!(r.draft?.alerts?.length && !r.draft?.alerts_ack),
       });
-    } catch (e) { setError(String(e)); }
+    } catch (e) { setError(errMsg(e)); }
     setBusy(false);
   };
 
@@ -223,7 +227,7 @@ export default function App() {
       });
       const toSpeak = r.summary_speech_bn || r.summary_bn;
       if (toSpeak) speakBengali(toSpeak);
-    } catch (e) { setError(String(e)); }
+    } catch (e) { setError(errMsg(e)); }
     setBusy(false);
   };
 
@@ -349,7 +353,7 @@ export default function App() {
             <>
               <ul className="editlist">
                 {editItems.map((i, idx) => (
-                  <li key={i.product_id}>
+                  <li key={`${idx}-${i.product_id}`}>
                     <span>{i.name_bn} — {taka(i.unit_price)}/{unitBn(i.unit)}</span>
                     <span className="qtyctl">
                       <button onClick={() => setQty(idx, +(i.qty - (i.unit === "piece" ? 1 : 0.5)).toFixed(2))}>−</button>
@@ -401,7 +405,7 @@ export default function App() {
           {awaitingConfirm && (
             <div style={{ color: "#059669", background: "#ecfdf5", border: "1px solid #a7f3d0", padding: "8px 12px", borderRadius: 8, marginBottom: 10, fontSize: 13, fontWeight: 600 }}>
               🎙️ কোমাম জিজ্ঞেস করছে: <b>"{resp.draft.kind === "due_payment" ? "সব ঠিক আছে, জমা লিখে রাখবো?" : "সব ঠিক আছে, বিল করবো?"}"</b><br/>
-              👉 মুখে বলুন <b>"হ্যাঁ"</b> (বা অপেক্ষা করুন ৫ সেকেন্ডে একা সেভ হবে)
+              👉 মুখে বলুন <b>"হ্যাঁ"</b> বা <b>"না"</b> — অথবা নিচের বাটন চাপুন (নিজে থেকে সেভ হবে না)
             </div>
           )}
           <div className="row">

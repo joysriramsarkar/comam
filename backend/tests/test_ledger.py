@@ -166,3 +166,24 @@ def test_ledger_rejects_nonpositive_purchase():
     chini = conn.execute("SELECT * FROM products WHERE name_en='sugar'").fetchone()
     with pytest.raises(ValueError):
         led.record_purchases([{"product_id": chini["id"], "qty": 0}])
+
+
+def test_due_payment_guards_itself():
+    # The ledger refuses zero/over-limit payments on its own — callers
+    # don't have to remember to check first (confirm still says nicer).
+    conn, led = make()
+    saban = conn.execute("SELECT * FROM products WHERE name_en='soap'").fetchone()
+    led.create_sale([{"product_id": saban["id"], "qty": 2}],
+                    customer_id=1, payment_type="due")  # 70 due
+    with pytest.raises(ValueError):
+        led.record_due_payment(1, 0)
+    with pytest.raises(ValueError):
+        led.record_due_payment(1, -50)
+    with pytest.raises(ValueError):
+        led.record_due_payment(1, 70.01)
+    with pytest.raises(ValueError):
+        led.record_due_payment(9999, 10)  # unknown customer
+    # exactly the due works, then nothing is left to take
+    assert led.record_due_payment(1, 70) == 0
+    with pytest.raises(ValueError):
+        led.record_due_payment(1, 1)

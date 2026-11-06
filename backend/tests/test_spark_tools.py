@@ -28,6 +28,38 @@ def _cid(name):
     ).fetchone()["id"]
 
 
+def test_days_argument_is_clamped():
+    # Tool `days` values come from the model — clamp, never trust:
+    # negative, huge or non-numeric input must not break or widen the query.
+    from app.tools import _days
+
+    assert _days(-5, 1) == 1
+    assert _days(0, 1) == 1
+    assert _days(10**9, 1) == 365
+    assert _days("সাত", 7) == 7
+    assert _days(None, 1) == 1
+    assert _days(3.9, 1) == 3
+
+
+def test_create_customer_tool_is_gone():
+    # The old create_customer tool wrote straight to the DB, bypassing
+    # the draft→confirm promise. It is removed; new customers come in
+    # through set_customer_name and are created at confirm time.
+    s = DraftSession(conn)
+    before = conn.execute("SELECT COUNT(*) c FROM customers").fetchone()["c"]
+    result = dispatch(s, "create_customer", {"name": "অনুপ্রবেশ টেস্ট"})
+    assert "error" in result
+    after = conn.execute("SELECT COUNT(*) c FROM customers").fetchone()["c"]
+    assert after == before
+
+
+def test_malformed_tool_call_returns_error_not_exception():
+    s = DraftSession(conn)
+    # Missing required key — must come back as an error dict, not raise.
+    result = dispatch(s, "search_product", {})
+    assert "error" in result
+
+
 def test_spark_purchase_draft_keeps_its_kind():
     s = DraftSession(conn)
     dispatch(s, "search_product", {"query": "চিনি"})

@@ -6,16 +6,18 @@ POST /api/drafts/{id}/confirm — the shopkeeper always confirms first.
 Reports and due-queries are read-only and answered immediately.
 """
 import json
+import logging
 import re
 import threading
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
+
+logger = logging.getLogger("comam")
 
 from .asr.base import TranscriptionError
 from .asr.muse import biasing_enabled, ffmpeg_available
@@ -40,6 +42,54 @@ if not os.environ.get("TESTING") and not os.environ.get("PYTEST_CURRENT_TEST"):
         pass
 
 app = FastAPI(title="comam AI")
+
+
+@app.middleware("http")
+async def security_headers(request, call_next):
+    resp = await call_next(request)
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("Referrer-Policy", "no-referrer")
+    # Everything the built app needs is same-origin; inline style
+    # attributes require style-src 'unsafe-inline'.
+    resp.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; "
+        "connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+    )
+    return resp
+
+
+class _RateLimiter:
+    """Tiny in-memory sliding-window limiter (single-process deploy)."""
+
+    def __init__(self, limit: int, window_sec: float):
+        self.limit = limit
+        self.window = window_sec
+        self._hits: dict[str, list[float]] = {}
+        self._lock = threading.Lock()
+
+    def allow(self, key: str) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            hits = [t for t in self._hits.get(key, []) if now - t < self.window]
+            if len(hits) >= self.limit:
+                self._hits[key] = hits
+                return False
+            hits.append(now)
+            self._hits[key] = hits
+            # Prune stale keys so the map cannot grow without bound.
+            if len(self._hits) > 1000:
+                self._hits = {
+                    k: v for k, v in self._hits.items() if v and now - v[-1] < self.window
+                }
+            return True
+
+
+# /api/transcribe costs money per call — cap it per client IP.
+_transcribe_limiter = _RateLimiter(limit=20, window_sec=300)
+
 meta = MetaClient()
 if meta.enabled and not ffmpeg_available():
     # MP-14: voice must not die silently on a machine without ffmpeg.
@@ -72,7 +122,7 @@ def ledger():
 
 
 class CommandIn(BaseModel):
-    text: str
+    text: str = Field(min_length=1, max_length=1000)
 
 
 def _save_draft(draft):
@@ -134,9 +184,9 @@ def products():
 
 
 class CustomerCreateIn(BaseModel):
-    name: str
-    phone: str = ""
-    aliases: str = ""
+    name: str = Field(min_length=1, max_length=100)
+    phone: str = Field(default="", max_length=32)
+    aliases: str = Field(default="", max_length=200)
 
 
 @app.post("/api/customers")
@@ -181,7 +231,7 @@ def command(body: CommandIn):
                 draft = llm_draft
                 draft.setdefault("engine", "spark")
         except Exception:
-            pass
+            logger.exception("spark understand failed; using local parser")
 
     # Enforce general due query if phrase clearly asks for all dues across the shop
     if ("বাকি" in text or "বকেয়া" in text or "দেনা" in text) and re.search(
@@ -197,22 +247,31 @@ def command(body: CommandIn):
         try:
             with _draft_lock:
                 conf_res = _confirm_draft_locked(pending_id)
-            if draft.get("kind") == "due_payment":
-                rem = conf_res.get("result", {}).get("remaining_due")
-                rem_str = f" বাকি রইল {fmt_taka(rem)}।" if rem is not None else ""
-                msg = f"জমা সফলভাবে সেভ হয়েছে।{rem_str}"
-            else:
-                msg = "বিল সফলভাবে সেভ হয়েছে।"
-            speech = format_speech_bn(msg)
-            return {
-                "kind": "confirmed",
-                "answer_bn": msg,
-                "answer_speech_bn": speech,
-                "draft": draft,
-                "confirmed_draft_id": pending_id,
-            }
+        except HTTPException:
+            # The claim is reverted inside the lock, so the draft stays
+            # pending and fixable on screen. NEVER fall through and
+            # re-save it as a second draft.
+            raise
         except Exception:
-            pass
+            logger.exception("auto-confirm failed for draft %s", pending_id)
+            raise HTTPException(
+                400,
+                "বিল সেভ করা যায়নি — স্ক্রিনে গিয়ে দেখে সংশোধন করুন",
+            )
+        if draft.get("kind") == "due_payment":
+            rem = conf_res.get("result", {}).get("remaining_due")
+            rem_str = f" বাকি রইল {fmt_taka(rem)}।" if rem is not None else ""
+            msg = f"জমা সফলভাবে সেভ হয়েছে।{rem_str}"
+        else:
+            msg = "বিল সফলভাবে সেভ হয়েছে।"
+        speech = format_speech_bn(msg)
+        return {
+            "kind": "confirmed",
+            "answer_bn": msg,
+            "answer_speech_bn": speech,
+            "draft": draft,
+            "confirmed_draft_id": pending_id,
+        }
 
     kind = draft["kind"]
     if kind == "due_query":
@@ -407,8 +466,14 @@ def _confirm_draft_locked(draft_id: int):
             result = {"remaining_due": due}
         elif draft["kind"] == "undo":
             target = draft.get("target_sale_id")
+            if not target:
+                # Never fall back to "whatever is last right now" — the
+                # command referred to the last sale when it was spoken.
+                raise HTTPException(
+                    400, "বাতিল করার মতো বিক্রি পাওয়া যায়নি"
+                )
             try:
-                voided = led.void_sale(target) if target else led.void_last_sale()
+                voided = led.void_sale(target)
             except ValueError as e:
                 raise HTTPException(400, str(e))
             if voided is None:
@@ -452,7 +517,7 @@ def _reject_draft_locked(draft_id: int):
 
 
 @app.get("/api/reports/summary")
-def report_summary(days: int = 1):
+def report_summary(days: int = Query(1, ge=1, le=365)):
     # One meaning of "আজ" everywhere (Batch G7): days=1 is the calendar
     # day, exactly like the voice answer — a rolling 24h window used to
     # make the dashboard card disagree with the spoken answer.
@@ -467,7 +532,7 @@ def report_week():
 
 
 @app.get("/api/reports/top")
-def report_top(days: int = 7):
+def report_top(days: int = Query(7, ge=1, le=365)):
     return ledger().top_products(days)
 
 
@@ -489,7 +554,7 @@ class ItemIn(BaseModel):
 class ItemsIn(BaseModel):
     # Typed items (Batch G5): a missing qty or a non-numeric qty is a
     # 422 from Pydantic, not a 500 from a KeyError deep in the rebuild.
-    items: list[ItemIn]
+    items: list[ItemIn] = Field(max_length=100)
     # Dropping catalog-unknown items must be an explicit act, not a
     # side effect of any edit (FIX-PLAN-2 D5).
     acknowledge_unknown: bool = False
@@ -638,7 +703,7 @@ def health():
 
 
 @app.get("/api/reports/daily")
-def report_daily(days: int = 7):
+def report_daily(days: int = Query(7, ge=1, le=90)):
     return ledger().daily_sales(days)
 
 
@@ -677,9 +742,14 @@ def _asr_keywords():
 
 
 @app.post("/api/transcribe")
-async def transcribe(file: UploadFile = File(...)):
+async def transcribe(request: Request, file: UploadFile = File(...)):
     if not meta.enabled:
         raise HTTPException(501, "MODEL_API_KEY not set on server")
+    client_ip = (request.client.host if request.client else "?") or "?"
+    if not _transcribe_limiter.allow(client_ip):
+        raise HTTPException(
+            429, "একটানা অনেকবার পাঠানো হয়েছে — একটু পর আবার চেষ্টা করুন"
+        )
     # Read at most cap+1 bytes: an unbounded read of an arbitrary upload
     # into memory (plus WAV conversion copies) was a trivial DoS.
     data = await file.read(MAX_TRANSCRIBE_BYTES + 1)

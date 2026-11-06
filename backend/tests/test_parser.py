@@ -267,7 +267,7 @@ def test_affirmation_guard_without_pending_draft():
     d = parse_command(conn, "হ্যাঁ, বিল করে দাও।")
     assert d["kind"] == "unknown"
     assert d.get("is_conversational") is True
-    assert "আগে" in d.get("reply", "") or "সেভ" in d.get("reply", "")
+    assert "বিল নেই" in d.get("reply", "")
     assert not d.get("items")
     assert not d.get("unknown_items")
 

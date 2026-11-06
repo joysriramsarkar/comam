@@ -24,7 +24,11 @@ class MetaClient:
         if self._client is None:
             from openai import OpenAI
 
-            self._client = OpenAI(base_url=BASE_URL, api_key=self.api_key)
+            # Hard timeout: a hung Meta API must fail over to the local
+            # parser in seconds, not park the request for minutes.
+            self._client = OpenAI(
+                base_url=BASE_URL, api_key=self.api_key, timeout=30.0, max_retries=2
+            )
         return self._client
 
     def understand(self, conn, text):
@@ -68,8 +72,19 @@ class MetaClient:
                 }
             )
             for tc in msg.tool_calls:
-                args = json.loads(tc.function.arguments or "{}")
-                result = dispatch(session, tc.function.name, args)
+                try:
+                    args = json.loads(tc.function.arguments or "{}")
+                    if not isinstance(args, dict):
+                        args = {}
+                except json.JSONDecodeError:
+                    args = None
+                if args is None:
+                    # Hand the failure back as a tool result so the model
+                    # can resend valid arguments instead of aborting the
+                    # whole understanding turn.
+                    result = {"error": "arguments were not valid JSON"}
+                else:
+                    result = dispatch(session, tc.function.name, args)
                 messages.append(
                     {
                         "role": "tool",

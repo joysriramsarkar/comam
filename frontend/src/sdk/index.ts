@@ -3,3 +3,4 @@ export * from './speech-utils';
 export * from './comam-agent';
 export * from './ComamVoiceWidget';
 export * from './useVoiceInput';
+export * from './confirm-intent';

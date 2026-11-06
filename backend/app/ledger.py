@@ -163,9 +163,25 @@ class Ledger:
 
     # ---------- due ledger (বাকি খাতা) ----------
     def record_due_payment(self, customer_id, amount, note=""):
+        # Self-guard (like create_sale / void_sale): a payment of zero,
+        # less, or more than the outstanding due must never be written —
+        # no matter which caller gets here first.
+        cust = self.conn.execute(
+            "SELECT id FROM customers WHERE id=?", (customer_id,)
+        ).fetchone()
+        if cust is None:
+            raise ValueError(f"unknown customer {customer_id}")
+        amount = float(amount)
+        if not amount > 0:
+            raise ValueError("জমার পরিমাণ শূন্যের বেশি হতে হবে")
+        due_now = self.customer_due(customer_id)
+        if amount > due_now + 1e-9:
+            raise ValueError(
+                f"বাকি আছে মাত্র {due_now:.2f} টাকা — এর বেশি জমা নেওয়া যাবে না"
+            )
         self.conn.execute(
             "INSERT INTO due_payments (customer_id, amount, created_at, note) VALUES (?,?,?,?)",
-            (customer_id, float(amount), _now(), note),
+            (customer_id, amount, _now(), note),
         )
         self._audit("due_payment", f"customer {customer_id} paid {amount}")
         self.conn.commit()

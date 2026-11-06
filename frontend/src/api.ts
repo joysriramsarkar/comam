@@ -92,8 +92,20 @@ export const api = {
   },
 };
 
-export const bnNum = (v: number | string): string =>
-  String(v).replace(/[0-9]/g, (d) => "০১২৩৪৫৬৭৮৯"[Number(d)]);
+export const bnNum = (v: number | string): string => {
+  // Numbers are rounded before digit-mapping so float noise
+  // (225.00000001) never reaches the screen or TTS. Strings pass
+  // through untouched so "08" stays "০৮".
+  if (typeof v === "number") {
+    if (!Number.isFinite(v)) return String(v);
+    const rounded = Math.round(v * 100) / 100;
+    return String(rounded).replace(/[0-9]/g, (d) => "০১২৩৪৫৬৭৮৯"[Number(d)]);
+  }
+  return v.replace(/[0-9]/g, (d) => "০১২৩৪৫৬৭৮৯"[Number(d)]);
+};
+/** Error → readable message (never "Error: ..." on screen). */
+export const errMsg = (e: unknown): string =>
+  e instanceof Error ? e.message : String(e);
 export const taka = (v: number): string => `${bnNum(v)} টাকা`;
 
 /** Converts English unit names to Bengali display labels */
