@@ -446,11 +446,19 @@ def parse_command(conn, text):
         for n in sorted(cust_names, key=len, reverse=True):
             s = s.replace(n, " ")
         s = re.sub(r"(নামে|বাকিতে|বাকি|নগদে|নগদ|ইউপিআইতে|ইউপিআই)", " ", s)
-        # honorific residue after name stripping: 'রহিমদার' -> 'দার'
-        s = re.sub(r"(^|\s)(দার|দা)(\s|$)", " ", s)
-        if len(s.strip()) < 2:
+        # honorific residue after name stripping: 'রহিমদার' -> 'দার', and the
+        # genitive 'র' that survives once the alias 'রহিমদা' is replaced.
+        s = re.sub(r"(^|\s)(দার|দা|র)(\s|$)", " ", s)
+        s = s.replace("।", " ")
+        # A segment that is only residue (no product words) must not be flagged as
+        # an unknown item - it is just leftover customer/payment words.
+        if len(re.sub(r"[\s,।]", "", s).strip()) < 2:
             # residue like 'র' from 'রহিমদার' is not an item segment;
             # a 1-letter query would substring-match half the catalog.
+            continue
+        # A disjunction ('... না ...') is a clarification question the
+        # shopkeeper is voicing, not a second order: never bill or flag it.
+        if re.search(r"(^|\s)না(\s|$)", s):
             continue
         consume(s.strip())
     draft["items"] = items
